@@ -22,6 +22,31 @@ coding: utf-8
 
 (setlocale LC_ALL "en_US.UTF-8")
 
+(define key-bindings
+  `((#\" change-register store) 
+    (#\' change-register load) 
+    (#\h show-help)
+    (#\t (#\p ,(λ (xdoui regs state . rest)
+                  (debug-print xdoui "Debug!!\n")
+                  (prompt-flash xdoui "Prompt!!" )
+                  (print xdoui 'registers "Reg!!\n")
+                  (print xdoui 'test "Test!!\n")
+                  (print xdoui #f "Main!!\n")))
+         (#\a ,(λ (xdoui regs state . rest)
+                  (add-subwindow! xdoui 'test)
+                  (print xdoui 'test "Test window!!\n")))
+         (#\d ,(λ (xdoui regs state . rest)
+                  (remove-subwindow! xdoui 'test))))
+    (#\p print-register)
+    (#\m (#\g (#\p get-mouse-position))
+         (#\p put-mouse-position)
+         (#\w get-mouse-window)
+         (#\c click-mouse))
+    (#\w (#\p get-window-position)
+         (#\m move-window)
+         (#\g (#\a get-active-window)))
+    (#\q quit "Exited by user"))) 
+
 (define-record-type command-type
                     (make-command command arguments register)
                     command?
@@ -238,31 +263,6 @@ coding: utf-8
                        (throw 'abort history (format #f "No content in register \"~c\"" (cdr reg)))))))
         (else
           (throw 'abort history "No register specified"))))
-
-(define key-bindings
-  `((#\" change-register store) 
-    (#\' change-register load) 
-    (#\h show-help)
-    (#\t (#\p ,(λ (xdoui regs state . rest)
-                  (debug-print xdoui "Debug!!\n")
-                  (prompt-flash xdoui "Prompt!!" )
-                  (print xdoui 'registers "Reg!!\n")
-                  (print xdoui 'test "Test!!\n")
-                  (print xdoui #f "Main!!\n")))
-         (#\a ,(λ (xdoui regs state . rest)
-                  (add-subwindow! xdoui 'test)
-                  (print xdoui 'test "Test window!!\n")))
-         (#\d ,(λ (xdoui regs state . rest)
-                  (remove-subwindow! xdoui 'test))))
-    (#\p print-register)
-    (#\m (#\g (#\p get-mouse-position))
-         (#\p put-mouse-position)
-         (#\w get-mouse-window)
-         (#\c click-mouse))
-    (#\w (#\p get-window-position)
-         (#\m move-window)
-         (#\g (#\a get-active-window)))
-    (#\q quit "Exited by user"))) 
 
 (define (deref-symbol sym)
   (false-if-exception (module-ref (current-module) sym)))
