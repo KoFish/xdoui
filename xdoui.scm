@@ -208,14 +208,21 @@ coding: utf-8
                   (cons ch history))) 
         (throw 'abort (cons ch history) "Not a valid register, use only alphabetic characters"))))
 
+(define (show-help xdoui registers state history . rest)
+  "Show the description of the action called with a particular
+  keybinding."
+  (values `(add-to-state ,(acons 'show-help #t '()))
+          history))
+
 (define (get-mouse-position xdoui registers state history . rest)
+  "Get the current mouse position, either print to main-window or
+  store in specified register."
   (cond ((xdo-get-mouse-location (get-xdo xdoui))
          => (λ (result)
                (cond ((vhash-assv 'store state)
                       => (λ (value)
                             (values `(new-registers ,(update-register registers (cdr value) #:position result))
-                                    history)
-                            ))
+                                    history)))
                      (else (values `(value ,result)
                                    history)))))
         (else 
@@ -235,6 +242,7 @@ coding: utf-8
 (define key-bindings
   `((#\" change-register store) 
     (#\' change-register load) 
+    (#\h show-help)
     (#\t (#\p ,(λ (xdoui regs state . rest)
                   (debug-print xdoui "Debug!!\n")
                   (prompt-flash xdoui "Prompt!!" )
@@ -302,6 +310,9 @@ coding: utf-8
                                      (cmd-loop (vhash-consq type reg state) history parse-tree))
                                     (('new-registers regs) 
                                      `(update-registers ,regs))
+                                    (('add-to-state states)
+                                     (let ((result (fold (λ (e r) (vhash-consv (car e) (cdr e) r)) state states)))
+                                       (cmd-loop result history parse-tree)))
                                     (('value value) (print xdoui #f "Result: ~a~%" value))
                                     (_ result)))))
                  (λ (abort history reason)
@@ -324,9 +335,18 @@ coding: utf-8
         (((? symbol? symbol) . args)
          (cond ((deref-symbol symbol) 
                 => (λ (ƒ)
-                      (prompt-flash xdoui "[~S]" symbol)
-                      (apply call-proc ƒ args)
-                      ))
+                      (let ((help? (vhash-assv 'show-help state)))
+                        (if (and help? (cdr help?))
+                            (cond ((procedure-documentation ƒ)
+                                   => (λ (help-text)
+                                   (print xdoui #f "~%Description of ~a:~%  ~a~%" symbol (string-join 
+                                                                                           (map
+                                                                                             string-trim-both 
+                                                                                             (string-split help-text #\newline))
+                                                                                           " ")))))
+                            (begin 
+                              (prompt-flash xdoui "[~S]" symbol)
+                              (apply call-proc ƒ args))))))
                (else (throw 'abort history (format #f "No such function: (~S)" symbol)))))
         (_ (debug-print xdoui "Unknown: ~S\n" branch))))))
 
