@@ -82,12 +82,15 @@ coding: utf-8
     xdoui))
 
 (define-method (set-prompt (xdoui <xdoui>) (str <string>) . args)
+  "Set the text of the prompt-window at the bottom of the screen."
   (let ((win (prompt-window xdoui)))
     (erase win)
     (addstr win (apply format #f str args))
     (refresh win)))
 
 (define-method (prompt-flash (xdoui <xdoui>) (str <string>) . args)
+  "Show a string to the right side of the prompt. This will most likely
+  be erased by the next call to `set-prompt`."
   (let* ((win (prompt-window xdoui))
          (mx (getmaxx win))
          (str (apply format #f str args))
@@ -96,11 +99,17 @@ coding: utf-8
     (refresh win)))
 
 (define-method (print (xdoui <xdoui>) window (str <string>))
-  (let ((win (cond ((assv-ref (extra-windows xdoui) window)
-                    => (λ (w) (cdr w)))
-                   (else (main-window xdoui)))))
-    (addstr win str)
-    (refresh win)))
+  "Add a string to the window specified by the window argument. The window
+  argument is either #f for the main window or a symbol specifing a sub
+  window on the right hand side."
+  (if window
+      (cond ((assv-ref (extra-windows xdoui) window)
+             => (λ (w) (let ((w (cdr w)))
+                            (addstr w str)
+                            (refresh w)))))
+      (let ((win (main-window xdoui)))
+        (addstr win str)
+        (refresh win))))
 
 (define-method (print (xdoui <xdoui>) window (str <string>) a . args)
   (print xdoui window (apply format #f str a args)))
@@ -113,13 +122,35 @@ coding: utf-8
                 (add-subwindow! xdoui 'debug)
                 (apply debug-print xdoui str arguments)))))
 
-(define-method (add-subwindow! (xdoui <xdoui>) name)
-  (cond ((assv name (extra-windows xdoui)) #f)
-        (else 
-          (set! (extra-windows xdoui) (assv-set! (extra-windows xdoui) name #f)))) 
-  (resize-subwindows! xdoui))
+(define-method (get-next-char (xdoui <xdoui>) timeout)
+  "Read the next character from input or return false if timeout is reached."
+  (if timeout (timeout! (get-screen xdoui) timeout))
+  (let ((ch (getch (get-screen xdoui))))
+    (if timeout (begin (timeout! (get-screen xdoui) -1) (raw!)))
+    (if (not (eqv? ch KEY_RESIZE))
+        ch
+        (let ((scr (get-screen xdoui))) 
+          (timeout! (get-screen xdoui) 500)
+          (let loop ((ch (getch (get-screen xdoui))))
+            (if (eqv? ch KEY_RESIZE) 
+                (loop (getch (get-screen xdoui)))
+                (begin
+                  (resize-xdoui! xdoui)
+                  (timeout! (get-screen xdoui) -1)
+                  ch)))))))
+
+(define (deref-symbol sym)
+  (false-if-exception (module-ref (current-module) sym)))
+
+(define (destroy-win win)
+  (let ((s (normal #\sp)))
+    (border win s s s s s s s s)
+    (refresh win)
+    (delwin win)))
 
 (define-method (resize-xdoui! (xdoui <xdoui>))
+  "Resize the whole screen to the current terminal size, it also clears the
+  content of all the subwindows."
   (let*  ((scr (get-screen xdoui))
           (my (getmaxy scr)) 
           (mx (getmaxx scr)) 
@@ -134,20 +165,6 @@ coding: utf-8
     (hline scr (acs-hline) (- mx width) #:y (- my 3) #:x 0)  
     (refresh (main-window xdoui))
     (refresh (prompt-window xdoui))))
-
-(define-method (get-next-char (xdoui <xdoui>) timeout)
-  (if timeout (timeout! (get-screen xdoui) timeout))
-  (let ((ch (getch (get-screen xdoui))))
-    (if timeout (begin (timeout! (get-screen xdoui) -1) (raw!)))
-    (if (eqv? ch KEY_RESIZE)
-        (resize-xdoui! xdoui))
-    ch))
-
-(define (destroy-win win)
-  (let ((s (normal #\sp)))
-    (border win s s s s s s s s)
-    (refresh win)
-    (delwin win)))
 
 (define-method (resize-subwindows! (xdoui <xdoui>))
   (let ((win-count (length (extra-windows xdoui)))) 
@@ -187,6 +204,12 @@ coding: utf-8
                            (extra-windows xdoui)
                            (cons #f (cdr (make-list win-count #t)))))))))
 
+(define-method (add-subwindow! (xdoui <xdoui>) name)
+  (cond ((assv name (extra-windows xdoui)) #f)
+        (else 
+          (set! (extra-windows xdoui) (assv-set! (extra-windows xdoui) name #f)))) 
+  (resize-subwindows! xdoui))
+
 (define-method (remove-subwindow! (xdoui <xdoui>) name)
   (cond ((assv name (extra-windows xdoui))
          => (λ (win)
@@ -218,9 +241,6 @@ coding: utf-8
                          (else (make-register-value window position)))
                (vhash-delv key registers)))
 
-(define (deref-symbol sym)
-  (false-if-exception (module-ref (current-module) sym)))
-
 #|
  |(define-syntax define-action
  |  (syntax-rules (store load key)
@@ -241,7 +261,7 @@ coding: utf-8
  |#
 
 (define (change-register xdoui registers state history type)
-  "Change the current registers used as operators"
+  "Change the current registers used as operators."
   (let ((ch (get-next-char xdoui #f)))
     (if (and (char? ch) (char-alphabetic? ch))
         (begin
@@ -340,10 +360,9 @@ coding: utf-8
                              (cmd-loop state history (cdr new-branch))
                              (throw 'abort history (format #f "~c is not a recognized character" ch))))
                        (throw 'abort history "Aborted")))
-                 (if history 
+                 (if timeout 
                      (begin
-                       (cmd-loop state history (cdr timeout))
-                       ))))))
+                       (cmd-loop state history (cdr timeout))))))))
         (((? procedure? ƒ) (? symbol? symbol) . args)
          (let ((help? (vhash-assv 'show-help state)))
            (if (and help? (cdr help?))
