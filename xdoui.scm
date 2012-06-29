@@ -184,7 +184,6 @@ coding: utf-8
                (whs (divide-array (- my 3) win-count))
                (whsa (reverse (fold (λ (e a) (cons (+ e (car a)) a)) (list 0) whs))))
           (let-values (((wh q) (floor/ (- my 3) win-count))) 
-                      (print xdoui #f "wh: ~S/~S my: ~S~%" wh q my)
                       (set! (extra-windows xdoui) 
                         (map (λ (e wh a)
                                 (cond ((cdr e) 
