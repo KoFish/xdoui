@@ -31,20 +31,21 @@ coding: utf-8
                   (prompt-flash xdoui "Prompt!!" )
                   (print xdoui 'registers "Reg!!\n")
                   (print xdoui 'test "Test!!\n")
-                  (print xdoui #f "Main!!\n")))
+                  (print xdoui #f "Main!!\n")) test-print)
          (#\a ,(λ (xdoui regs state . rest)
                   (add-subwindow! xdoui 'test)
-                  (print xdoui 'test "Test window!!\n")))
+                  (print xdoui 'test "Test window!!\n")) test-add)
          (#\d ,(λ (xdoui regs state . rest)
-                  (remove-subwindow! xdoui 'test))))
+                  (remove-subwindow! xdoui 'test)) test-delete))
     (#\p print-register)
     (#\m (#\g (#\p get-mouse-position))
          (#\p put-mouse-position)
          (#\w get-mouse-window)
          (#\c click-mouse))
-    (#\w (#\p get-window-position)
-         (#\m move-window)
-         (#\g (#\a get-active-window)))
+    (#\w (#\p put-window-position)
+         (#\g (#\a get-active-window)
+              (#\p get-window-position))
+         (timeout 300 get-active-window))
     (#\q quit "Exited by user"))) 
 
 (define-record-type command-type
@@ -95,14 +96,22 @@ coding: utf-8
     (refresh win)))
 
 (define-method (print (xdoui <xdoui>) window (str <string>))
-  (let ((win (cond ((assv window (extra-windows xdoui))
-                    => (λ (w) (cddr w)))
+  (let ((win (cond ((assv-ref (extra-windows xdoui) window)
+                    => (λ (w) (cdr w)))
                    (else (main-window xdoui)))))
     (addstr win str)
     (refresh win)))
 
 (define-method (print (xdoui <xdoui>) window (str <string>) a . args)
   (print xdoui window (apply format #f str a args)))
+
+(define* (debug-print xdoui str . arguments)
+  (cond ((get-subwindow xdoui 'debug)
+         => (λ (win)
+               (apply print xdoui 'debug str arguments))) 
+        (else (begin
+                (add-subwindow! xdoui 'debug)
+                (apply debug-print xdoui str arguments)))))
 
 (define-method (add-subwindow! (xdoui <xdoui>) name)
   (cond ((assv name (extra-windows xdoui)) #f)
@@ -126,10 +135,13 @@ coding: utf-8
     (refresh (main-window xdoui))
     (refresh (prompt-window xdoui))))
 
-(define-method (get-next-char (xdoui <xdoui>))
+(define-method (get-next-char (xdoui <xdoui>) timeout)
+  (if timeout (timeout! (get-screen xdoui) timeout))
   (let ((ch (getch (get-screen xdoui))))
-    (cond ((eqv? ch KEY_RESIZE) (resize-xdoui! xdoui) ch)
-          (else ch))))
+    (if timeout (begin (timeout! (get-screen xdoui) -1) (raw!)))
+    (if (eqv? ch KEY_RESIZE)
+        (resize-xdoui! xdoui))
+    ch))
 
 (define (destroy-win win)
   (let ((s (normal #\sp)))
@@ -206,6 +218,9 @@ coding: utf-8
                          (else (make-register-value window position)))
                (vhash-delv key registers)))
 
+(define (deref-symbol sym)
+  (false-if-exception (module-ref (current-module) sym)))
+
 #|
  |(define-syntax define-action
  |  (syntax-rules (store load key)
@@ -215,7 +230,7 @@ coding: utf-8
  |     (define (name xdoui registers state rest ...)
  |       (let ((load-reg (if (identifier? load-reg) (cond ((vhash-assv 'load state) => (λ (e) (cdr e))))))
  |             (store-reg (if (identifier? store-reg) (cond ((vhash-assv 'store state) => (λ (e) (cdr e))))))
- |             (ch (if (identifier? ch) (get-next-char xdoui))))
+ |             (ch (if (identifier? ch) (get-next-char xdoui #f))))
  |         exp exp* ...)))))
  |#
 
@@ -226,7 +241,8 @@ coding: utf-8
  |#
 
 (define (change-register xdoui registers state history type)
-  (let ((ch (get-next-char xdoui)))
+  "Change the current registers used as operators"
+  (let ((ch (get-next-char xdoui #f)))
     (if (and (char? ch) (char-alphabetic? ch))
         (begin
           (values `(set-register ,type ,ch)
@@ -254,6 +270,8 @@ coding: utf-8
           (throw 'abort history "Could not get mouse position"))))
 
 (define (print-register xdoui registers state history . rest)
+  "Print the content of the register specified in the load or store
+  register."
   (cond ((or (vhash-assv 'load state) (vhash-assv 'store state))
          => (λ (reg)
                (cond ((vhash-assv (cdr reg) registers)
@@ -263,9 +281,6 @@ coding: utf-8
                        (throw 'abort history (format #f "No content in register \"~c\"" (cdr reg)))))))
         (else
           (throw 'abort history "No register specified"))))
-
-(define (deref-symbol sym)
-  (false-if-exception (module-ref (current-module) sym)))
 
 (define (print-all-registers xdoui registers)
   (cond ((get-subwindow xdoui 'registers)
@@ -282,14 +297,6 @@ coding: utf-8
                 (add-subwindow! xdoui 'registers)
                 (print-all-registers xdoui registers)))))
 
-(define* (debug-print xdoui str . arguments)
-  (cond ((get-subwindow xdoui 'debug)
-         => (λ (win)
-               (apply print xdoui 'debug str arguments))) 
-        (else (begin
-                (add-subwindow! xdoui 'debug)
-                (apply debug-print xdoui str arguments)))))
-
 (define* (do-command xdoui registers parse-tree)
   (let cmd-loop ((state vlist-null) 
                  (history '())
@@ -298,55 +305,63 @@ coding: utf-8
             (λ (ƒ . args)
                (catch 'abort
                  (λ ()
-                    (let-values (((result . new-history) (apply ƒ xdoui registers state history args)))
-                                (if (not (boolean? result))
-                                    (debug-print xdoui "Result: ~S~%" result))
-                                (let ((history (if (not (null? new-history)) 
-                                                   (car new-history) 
-                                                   history))) 
-                                  (match result
-                                    (('set-register type reg . _)
-                                     (set-prompt xdoui "> ~{~a~^-~}" (reverse history)) 
-                                     (cmd-loop (vhash-consq type reg state) history parse-tree))
-                                    (('new-registers regs) 
-                                     `(update-registers ,regs))
-                                    (('add-to-state states)
-                                     (let ((result (fold (λ (e r) (vhash-consv (car e) (cdr e) r)) state states)))
-                                       (cmd-loop result history parse-tree)))
-                                    (('value value) (print xdoui #f "Result: ~a~%" value))
-                                    (_ result)))))
+                    (let-values 
+                      (((result . new-history) (apply ƒ xdoui registers state history args)))
+                      (if (not (boolean? result))
+                          (debug-print xdoui "Result: ~S~%" result))
+                      (let ((history (if (not (null? new-history)) 
+                                         (car new-history) 
+                                         history))) 
+                        (match result
+                          (('set-register type reg . _)
+                           (set-prompt xdoui "> ~{~a~^-~}" (reverse history)) 
+                           (cmd-loop (vhash-consq type reg state) history parse-tree))
+                          (('new-registers regs) 
+                           `(update-registers ,regs))
+                          (('add-to-state states)
+                           (let ((result (fold (λ (e r) (vhash-consv (car e) (cdr e) r)) state states)))
+                             (cmd-loop result history parse-tree)))
+                          (('value value) (print xdoui #f "Result: ~a~%" value))
+                          (_ result)))))
                  (λ (abort history reason)
                     (throw 'abort history reason))))))
       (match branch 
         ((((? char? char) . _) . _)
          (print-all-registers xdoui registers)
-         (let parse-loop ((ch (get-next-char xdoui)))
-           (let ((history (cons ch history)))
-             (set-prompt xdoui "> ~{~a~^-~}" (reverse history))
-             (if (char? ch)
-                 (let ((new-branch (assq ch branch)))
-                   (if new-branch
-                       (cmd-loop state history (cdr new-branch))
-                       (throw 'abort history (format #f "~c is not a recognized character" ch))))
-                 (throw 'abort history "Aborted")))))
-        (((? procedure? ƒ) . args)
+         (let ((timeout (assv-ref branch 'timeout)))
+           (if timeout (debug-print xdoui "~s" (cdr timeout)))
+           (let ((ch (get-next-char xdoui (if timeout (car timeout) #f))))
+             (if ch
+                 (let ((history (cons ch history)))
+                   (set-prompt xdoui "> ~{~a~^-~}" (reverse history))
+                   (if (char? ch)
+                       (let ((new-branch (assq ch branch)))
+                         (if new-branch
+                             (cmd-loop state history (cdr new-branch))
+                             (throw 'abort history (format #f "~c is not a recognized character" ch))))
+                       (throw 'abort history "Aborted")))
+                 (if history 
+                     (begin
+                       (cmd-loop state history (cdr timeout))
+                       ))))))
+        (((? procedure? ƒ) (? symbol? symbol) . args)
+         (let ((help? (vhash-assv 'show-help state)))
+           (if (and help? (cdr help?))
+               (cond ((procedure-documentation ƒ)
+                      => (λ (help-text)
+                            (print xdoui #f "~%Description: ~%  ~a~%" 
+                                   (string-join 
+                                     (map string-trim-both 
+                                          (string-split help-text #\newline))
+                                     " ")))))
+               (begin
+                 (prompt-flash xdoui "[~S]" symbol))))
          (apply call-proc ƒ args))
         (('quit reason) `(quit ,reason))
         (((? symbol? symbol) . args)
          (cond ((deref-symbol symbol) 
                 => (λ (ƒ)
-                      (let ((help? (vhash-assv 'show-help state)))
-                        (if (and help? (cdr help?))
-                            (cond ((procedure-documentation ƒ)
-                                   => (λ (help-text)
-                                   (print xdoui #f "~%Description of ~a:~%  ~a~%" symbol (string-join 
-                                                                                           (map
-                                                                                             string-trim-both 
-                                                                                             (string-split help-text #\newline))
-                                                                                           " ")))))
-                            (begin 
-                              (prompt-flash xdoui "[~S]" symbol)
-                              (apply call-proc ƒ args))))))
+                      (cmd-loop state history (cons ƒ branch))))
                (else (throw 'abort history (format #f "No such function: (~S)" symbol)))))
         (_ (debug-print xdoui "Unknown: ~S\n" branch))))))
 
