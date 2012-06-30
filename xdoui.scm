@@ -288,6 +288,9 @@ coding: utf-8
            (let ((acc (if (null? acc) '() (drop acc 1))))
              (set-prompt xdoui "\"~s\"" (list->string (reverse acc))) 
              (read-string (get-next-char xdoui #f) acc)))
+          ((? (λ (x) (and (not (char? x)) (> x 255))) key)
+           (prompt-flash xdoui "Invalid character")
+           (read-string (get-next-char xdoui #f) acc))
           (key 
             (let ((acc (cons ch acc)))
               (set-prompt xdoui "\"~s\"" (list->string (reverse acc))) 
