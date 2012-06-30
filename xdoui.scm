@@ -26,6 +26,9 @@ coding: utf-8
   `((#\" change-register store) 
     (#\' change-register load) 
     (#\h show-help)
+    (#\x prefix position x)
+    (#\y prefix position y)
+    (#\newline prefix text)
     (#\t (#\p ,(λ (xdoui regs state . rest)
                   (debug-print xdoui "Debug!!\n")
                   (prompt-flash xdoui "Prompt!!" )
@@ -150,8 +153,8 @@ coding: utf-8
           (width (min (floor (/ mx 2)) 50)) )
     (if (main-window xdoui) (delwin (main-window xdoui)))
     (if (prompt-window xdoui) (delwin (prompt-window xdoui)))
-    (set! (main-window xdoui) (newwin (- my 3) (- mx width) 0 0))
-    (set! (prompt-window xdoui) (newwin 1 mx (- my 2) 0))
+    (set! (main-window xdoui) (subwin scr (- my 3) (- mx width) 0 0))
+    (set! (prompt-window xdoui) (subwin scr 1 mx (- my 2) 0))
     (set! (right-width xdoui) width)
     (scrollok! (main-window xdoui) #t)
     (resize-subwindows! xdoui)
@@ -272,6 +275,28 @@ coding: utf-8
   keybinding."
   (values `(add-to-state ,(acons 'show-help #t '()))
           history))
+
+(define (eqv-v? x)
+  (λ (y) (eqv? x y)))
+
+(define (prefix xdoui registers state history type . args)
+  (let read-string ((ch (get-next-char xdoui #f))
+                    (acc '()))
+    (if (and ch (not (eqv? ch #\newline)))
+        (match ch
+          ((? (eqv-v? KEY_BACKSPACE) key)
+           (let ((acc (if (null? acc) '() (drop acc 1))))
+             (set-prompt xdoui "\"~s\"" (list->string (reverse acc))) 
+             (read-string (get-next-char xdoui #f) acc)))
+          (key 
+            (let ((acc (cons ch acc)))
+              (set-prompt xdoui "\"~s\"" (list->string (reverse acc))) 
+              (read-string (get-next-char xdoui #f) acc))))
+        (match type
+          ('text (values `(value ,(list->string (reverse acc)))
+                         (append history acc)))
+          (_ (throw 'abort (append acc history)
+                    (format #f "This type of prefix, ~s, isn't implemented" type))))))) 
 
 (define (get-mouse-position xdoui registers state history . rest)
   "Get the current mouse position, either print to main-window or
@@ -421,6 +446,7 @@ coding: utf-8
                             (λ ()
                               (let ((xdoui (make-xdoui xdo stdscr)))
                                 (main-loop xdoui))
+                              (timeout! stdscr 700)
                               (getch stdscr)
                               (endwin))
                             (λ (key . parameters)
