@@ -55,19 +55,6 @@ coding: utf-8
                     (arguments get-arguments set-arguments!)
                     (register  get-register  set-register!))
 
-(define-record-type register-value
-                    (make-register-value window position)
-                    register-value?
-                    (window   get-window   set-window!)
-                    (position get-position set-position!))
-
-(set-record-type-printer!
-  register-value
-  (λ (reg port)
-     (let ((p (get-position reg))
-           (w (get-window reg)))
-       (format port "[ ~@[Win:~S~]~:[~; ~]~@[Pos:~S~] ]" w (and w p) p))))
-
 (define-class <xdoui> ()
   (xdo           #:getter   get-xdo       #:init-keyword #:xdo) 
   (scr           #:getter   get-screen    #:init-keyword #:scr) 
@@ -115,7 +102,7 @@ coding: utf-8
   (print xdoui window (apply format #f str a args)))
 
 (define* (debug-print xdoui str . arguments)
-  (cond ((get-subwindow xdoui 'debug)
+  (cond ((get-subwindow! xdoui 'debug)
          => (λ (win)
                (apply print xdoui 'debug str arguments))) 
         (else (begin
@@ -148,6 +135,12 @@ coding: utf-8
     (refresh win)
     (delwin win)))
 
+(define (divide-array n d)
+  "Divide a by b and returns an array of b elements such that the sum of all
+  elements equal to a with as less difference between the elements as possible."
+  (let-values (((r q) (floor/ n d)))
+    (append (make-list q (1+ r)) (make-list (- d q) r))))
+
 (define-method (resize-xdoui! (xdoui <xdoui>))
   "Resize the whole screen to the current terminal size, it also clears the
   content of all the subwindows."
@@ -158,7 +151,7 @@ coding: utf-8
     (if (main-window xdoui) (delwin (main-window xdoui)))
     (if (prompt-window xdoui) (delwin (prompt-window xdoui)))
     (set! (main-window xdoui) (newwin (- my 3) (- mx width) 0 0))
-    (set! (prompt-window xdoui) (newwin 1 (- mx width) (- my 2) 0))
+    (set! (prompt-window xdoui) (newwin 1 mx (- my 2) 0))
     (set! (right-width xdoui) width)
     (scrollok! (main-window xdoui) #t)
     (resize-subwindows! xdoui)
@@ -166,62 +159,54 @@ coding: utf-8
     (refresh (main-window xdoui))
     (refresh (prompt-window xdoui))))
 
-(define (divide-array a b)
-  (let-values (((r q) (floor/ a b)))
-    (car (fold (λ (e a)
-                  (let ((ac (car a))
-                        (ql (cdr a)))
-                    (if (zero? ql)
-                        `(,(cons e ac) . 0)
-                        `(,(cons (1+ e) ac) . ,(1- ql)))))
-               `(() . ,q) (make-list b r)))))
-
 (define-method (resize-subwindows! (xdoui <xdoui>))
+  "Recreates all the subwindows in proper new size accord to the size of the
+  terminal."
   (let ((win-count (length (extra-windows xdoui)))) 
     (if (positive? win-count) 
         (let* ((my (getmaxy (get-screen xdoui))) 
                (mx (getmaxx (get-screen xdoui)))
                (whs (divide-array (- my 3) win-count))
-               (whsa (reverse (fold (λ (e a) (cons (+ e (car a)) a)) (list 0) whs))))
+               (whsa (reverse (fold (λ (e a) (cons (+ e (car a)) a)) (list 0) whs)))
+               (w (right-width xdoui)))
           (let-values (((wh q) (floor/ (- my 3) win-count))) 
-                      (set! (extra-windows xdoui) 
-                        (map (λ (e wh a)
-                                (cond ((cdr e) 
-                                       => (λ (w)
-                                             (destroy-win (cdr w))
-                                             (destroy-win (car w)))))
-                                (let* ((h wh)   
-                                       (w (right-width xdoui))
-                                       (x a)
-                                       (y (- mx w))) 
-                                  (let* ((wino (newwin (1+ h) w x y)) 
-                                         (wini (derwin wino (- h 2) (- w 2) 1 1))) 
-                                    (scrollok! wini #t) 
-                                    (refresh wini) 
-                                    (cons (car e) (cons wino wini))))) 
-                             (extra-windows xdoui)
-                             whs
-                             whsa)) 
-                      (map (λ (e p) 
-                              (let ((n (car e))
-                                    (wo (cadr e))
-                                    (wi (cddr e)))
-                                (if (not p)
-                                    (box wo (acs-vline) (acs-hline))
-                                    (border wo 
-                                            (acs-vline) (acs-vline)
-                                            (acs-hline) (acs-hline)
-                                            (acs-ltee) (acs-rtee)
-                                            (acs-llcorner) (acs-lrcorner))) 
-                                (addstr wo (string-capitalize (symbol->string n)) #:x 2 #:y 0)
-                                (refresh wo)))
-                           (extra-windows xdoui)
-                           (cons #f (cdr (make-list win-count #t)))))))))
+            (set! (extra-windows xdoui) 
+              ;; Destroy the old subwindows and create new ones to replace 
+              ;; them.
+              (map (λ (e wh x)
+                      (cond ((cdr e) 
+                             => (λ (win)
+                                   (destroy-win (cdr win))
+                                   (destroy-win (car win)))))
+                      (let* ((wino (newwin (1+ wh) w x (- mx w))) 
+                             (wini (derwin wino (- wh 2) (- w 2) 1 1))) 
+                        (scrollok! wini #t) 
+                        (refresh wini) 
+                        (cons (car e) (cons wino wini)))) 
+                   (extra-windows xdoui)
+                   whs
+                   whsa)) 
+            ;; Draw frames around each subwindow and write the title over the
+            ;; top border.
+            (map (λ (e p) 
+                    (let ((n (car e))
+                          (wo (cadr e))
+                          (wi (cddr e)))
+                      (if (not p)
+                          (box wo (acs-vline) (acs-hline))
+                          (border wo 
+                                  (acs-vline) (acs-vline)
+                                  (acs-hline) (acs-hline)
+                                  (acs-ltee) (acs-rtee)
+                                  (acs-llcorner) (acs-lrcorner))) 
+                      (addstr wo (string-capitalize (symbol->string n)) #:x 2 #:y 0)
+                      (refresh wo)))
+                 (extra-windows xdoui)
+                 (cons #f (cdr (make-list win-count #t)))))))))
 
 (define-method (add-subwindow! (xdoui <xdoui>) name)
   (cond ((assv name (extra-windows xdoui)) #f)
-        (else 
-          (set! (extra-windows xdoui) (assv-set! (extra-windows xdoui) name #f)))) 
+        (else (set! (extra-windows xdoui) (assv-set! (extra-windows xdoui) name #f)))) 
   (resize-subwindows! xdoui))
 
 (define-method (remove-subwindow! (xdoui <xdoui>) name)
@@ -235,25 +220,24 @@ coding: utf-8
                  (resize-subwindows! xdoui))))
         (else #f)))
 
-(define-method (get-subwindows (xdoui <xdoui>) name)
+(define-method (get-subwindow (xdoui <xdoui>) name)
   (cond ((assv name (extra-windows xdoui))
          => (λ (v) (cdr v)))
         (else #f)))
 
-(define-method (get-subwindow (xdoui <xdoui>) name)
-  (cond ((get-subwindows xdoui name) => (λ (w) (cdr w)))
+(define-method (get-subwindow! (xdoui <xdoui>) name)
+  (cond ((get-subwindow xdoui name) => (λ (w) (cdr w)))
         (else (add-subwindow! xdoui name)
-              (get-subwindow xdoui name))))
+              (get-subwindow! xdoui name))))
 
-(define* (update-register registers key #:key window position)
-  (vhash-consv key (cond ((vhash-assv key registers)
-                          => (λ (v)
-                                (let ((reg (cdr v)))
-                                  (if window (set-window! reg window))
-                                  (if position (set-position! reg position))
-                                  reg))) 
-                         (else (make-register-value window position)))
-               (vhash-delv key registers)))
+(define* (update-register registers key value) 
+  (vhash-consv key value (vhash-delv key registers)))
+
+(define (register->string register) 
+  (match register
+    (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
+    ((? window? window) (format #f "[Win: ~a]" window))
+    (e (format #f "[Unknown: ~a]" e))))
 
 #|
  |(define-syntax define-action
@@ -296,7 +280,8 @@ coding: utf-8
          => (λ (result)
                (cond ((vhash-assv 'store state)
                       => (λ (value)
-                            (values `(new-registers ,(update-register registers (cdr value) #:position result))
+                            (values `(new-registers ,(update-register registers (cdr value) 
+                                                                      (cons (car result) (cadr result))))
                                     history)))
                      (else (values `(value ,result)
                                    history)))))
@@ -310,21 +295,21 @@ coding: utf-8
          => (λ (reg)
                (cond ((vhash-assv (cdr reg) registers)
                       => (λ (cnt)
-                            (print xdoui #f "Register ~c: ~s\n" (car cnt) (cdr cnt))))
+                            (print xdoui #f "Register ~c: ~a\n" (car cnt) (register->string (cdr cnt)))))
                      (else
                        (throw 'abort history (format #f "No content in register \"~c\"" (cdr reg)))))))
         (else
           (throw 'abort history "No register specified"))))
 
 (define (print-all-registers xdoui registers)
-  (cond ((get-subwindow xdoui 'registers)
+  (cond ((get-subwindow! xdoui 'registers)
          => (λ (scr)
                (let ((x (getcurx scr))
                      (mx (getmaxx scr)))
                  (vhash-fold (λ (key value count)
-                                (addstr scr (format #f "Reg ~s: ~s" key value) 
+                                (addstr scr (format #f "Reg '~a': ~a" key (register->string value)) 
                                         #:x 0 #:y count #:n mx)
-                                (+ 1 count)) 
+                                (1+ count)) 
                              0 registers)
                  (refresh scr)))) 
         (else (let ((myx (getmaxyx (get-screen xdoui))))
