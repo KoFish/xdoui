@@ -411,9 +411,10 @@ coding: utf-8
                        (if (char-numeric? ch)
                            (begin
                              (ungetch ch)
-                             (let ((res (read-while xdoui char-numeric? (λ (acc) (set-prompt xdoui "> ~{~a~^-~}" (reverse acc))) #t)))
-                               (cmd-loop (vhash-consv 'prefix-number (locale-string->integer (list->string (reverse res))) state)
-                                         (cdr history)
+                             (let* ((res (read-while xdoui char-numeric? (λ (acc) (set-prompt xdoui "> ~{~a~}" (reverse acc))) #t))
+                                    (v (locale-string->integer (list->string (reverse res)))))
+                               (cmd-loop (vhash-consv 'prefix-number v state)
+                                         (cons v (cdr history))
                                          branch)))
                            (let ((new-branch (assq ch branch)))
                              (if new-branch
