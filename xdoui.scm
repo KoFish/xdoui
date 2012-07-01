@@ -243,6 +243,30 @@ coding: utf-8
     ((? window? window) (format #f "[Win: ~a]" window))
     (e (format #f "[Unknown: ~a]" e))))
 
+(define (read-while xdoui p update unget-last)
+  (let read-stuff ((acc '()) 
+                   (ch (get-next-char xdoui #f)))
+    (if ch
+        (match ch
+          ((? (λ (c) (or (eqv? c KEY_BACKSPACE) (eqv? c #\backspace))))
+           (let ((acc (if (null? acc) '() (cdr acc))))
+             (update acc) 
+             (read-stuff acc (get-next-char xdoui #f))))
+          ((? (λ (c) (or (eqv? c #\esc) (eqv? c #\x03))))
+           (throw 'abort (cons ch acc) "Input aborted"))
+          ((? (λ (c) (and (not (char? c)) (> c 255))) key)
+           (prompt-flash xdoui "Invalid character (~a)" key)
+           (read-stuff acc (get-next-char xdoui #f)))
+          ((? p key)
+           (let ((acc (cons ch acc)))
+             (update acc)
+             ;(set-prompt xdoui "> ~{~a~}" (reverse acc))
+             (read-stuff acc (get-next-char xdoui #f)))) 
+          (else 
+            (if (and unget-last (not (eqv? ch #\newline))) (ungetch ch))
+            acc))
+        (read-stuff acc (get-next-char xdoui #f)))))
+
 #|
  |(define-syntax define-action
  |  (syntax-rules (store load key)
@@ -277,46 +301,32 @@ coding: utf-8
   (values `(add-to-state ,(acons 'show-help #t '()))
           history))
 
+
 (define (prefix xdoui registers state history type . args)
-  (set-prompt xdoui "Prefix: ")
-  (let read-string ((ch (get-next-char xdoui #f))
-                    (acc '()))
-    (if (and ch (not (eqv? ch #\newline)))
-        (match ch
-          ((? (λ (x) (or (eqv? x KEY_BACKSPACE) (eqv? x #\backspace))) key)
-           (let ((acc (if (null? acc) '() (drop acc 1))))
-             (set-prompt xdoui "Prefix: ~a" (list->string (reverse acc))) 
-             (read-string (get-next-char xdoui #f) acc)))
-          ((? (λ (x) (or (eqv? x #\esc) (eqv? x #\x03))))
-           (throw 'abort (append acc history) (format #f "Aborted prefix ~a" type)))
-          ((? (λ (x) (and (not (char? x)) (> x 255))) key)
-           (prompt-flash xdoui "Invalid character (~a)" key)
-           (read-string (get-next-char xdoui #f) acc))
-          (key 
-            (let ((acc (cons ch acc)))
-              (set-prompt xdoui "Prefix: ~a" (list->string (reverse acc))) 
-              (read-string (get-next-char xdoui #f) acc))))
-        (let ((history (append acc history)))
-          (match type
-          ('text (values `(value ,(list->string (reverse acc)))
-                         history))
-          ('number (cond ((locale-string->integer (list->string (reverse acc))) 
-                          => (λ (r)
-                                (values `(value ,r) history)))
-                         (else (throw 'abort history "Not a valid integer"))))
-          ('position (let ((es (string-split (list->string (reverse acc)) #\x)))
-                       (if (<= (length es) 2)
-                           (let ((es (map (λ (x) (cond ((locale-string->integer x) => (λ (y) y))
-                                                       (else 0))) es)))
-                             (if (every (λ (x) x) es)
-                                 (values `(value ,(if (> (length es) 1)
-                                                      es
-                                                      (append es '(0))))
-                                         history)
-                                 (throw 'abort history "Wrong format on position")))
-                           (throw 'abort history "Too many x's in the string"))))
-          (_ (throw 'abort history
-                    (format #f "This type of prefix, ~s, isn't implemented" type)))))))) 
+  (let ((printer (λ (acc) (set-prompt xdoui "~a prefix: ~{~a~}" (string-capitalize (symbol->string type)) (reverse acc)))))
+    (printer '())
+    (match type
+      ('text
+       (let ((result (read-while xdoui (λ (c) (not (eqv? c #\newline))) printer #f)))
+         (values `(value ,(list->string (reverse result)))
+                 (append result history))))
+      ('number
+       (let ((result (read-while xdoui char-numeric? printer #t)))
+         (cond ((locale-string->integer (list->string (reverse result)))
+                => (λ (r) (values `(value ,r) (append result history))))
+               (else (throw 'abort (append result history) "Not a valid integer")))))
+      ('position
+       (let ((result (read-while xdoui (λ (c) (or (eqv? c #\x) (char-numeric? c))) printer #t)))
+         (let ((es (string-split (list->string (reverse result)) #\x)))
+           (if (<= (length es) 2)
+               (let ((es (map (λ (e) (or (locale-string->integer e) 0)) es)))
+                 (values `(value ,(if (> (length es) 1)
+                                      es
+                                      (append es '(0))))
+                         (append result history)))
+               (throw 'abort (append result history) "Too many x's in the string")))))
+      (else
+        (throw 'abort history "This type of prefix isn't implemented yet.")))))
 
 (define (get-mouse-position xdoui registers state history . rest)
   "Get the current mouse position, either print to main-window or
@@ -398,10 +408,17 @@ coding: utf-8
                  (let ((history (cons ch history)))
                    (set-prompt xdoui "> ~{~a~^-~}" (reverse history))
                    (if (char? ch)
-                       (let ((new-branch (assq ch branch)))
-                         (if new-branch
-                             (cmd-loop state history (cdr new-branch))
-                             (throw 'abort history (format #f "~c is not a recognized character" ch))))
+                       (if (char-numeric? ch)
+                           (begin
+                             (ungetch ch)
+                             (let ((res (read-while xdoui char-numeric? (λ (acc) (set-prompt xdoui "> ~{~a~^-~}" (reverse acc))) #t)))
+                               (cmd-loop (vhash-consv 'prefix-number (locale-string->integer (list->string (reverse res))) state)
+                                         (cdr history)
+                                         branch)))
+                           (let ((new-branch (assq ch branch)))
+                             (if new-branch
+                                 (cmd-loop state history (cdr new-branch))
+                                 (throw 'abort history (format #f "~c is not a recognized character" ch)))))
                        (throw 'abort history "Aborted")))
                  (if timeout 
                      (begin
