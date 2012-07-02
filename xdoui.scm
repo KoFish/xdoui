@@ -29,6 +29,7 @@ coding: utf-8
     (#\h show-help)
     (#\newline prefix text)
     (#\x prefix number)
+    (#\r prefix-to-reg)
     (#\t (#\p ,(λ (xdoui regs state . rest)
                   (debug-print xdoui "Debug!!\n")
                   (prompt-flash xdoui "Prompt!!" )
@@ -145,6 +146,18 @@ coding: utf-8
   (let-values (((r q) (floor/ n d)))
     (append (make-list q (1+ r)) (make-list (- d q) r))))
 
+(define (take lst n)
+  (match lst
+    ('() '())
+    ((h . r) (if (> n 0) (cons h (take r (1- n))) '()))))
+
+(define (prompt-chars ch)
+  (match ch
+    (#\newline "\\n")
+    (#\tab "\\t")
+    (#\esc "\\escape")
+    (else ch)))
+
 (define-method (resize-xdoui! (xdoui <xdoui>))
   "Resize the whole screen to the current terminal size, it also clears the
   content of all the subwindows."
@@ -182,7 +195,7 @@ coding: utf-8
                              => (λ (win)
                                    (destroy-win (cdr win))
                                    (destroy-win (car win)))))
-                      (let* ((wino (newwin (1+ wh) w x (- mx w))) 
+                      (let* ((wino (subwin (get-screen xdoui) (1+ wh) w x (- mx w))) 
                              (wini (derwin wino (- wh 2) (- w 2) 1 1))) 
                         (scrollok! wini #t) 
                         (refresh wini) 
@@ -243,29 +256,95 @@ coding: utf-8
     ((? window? window) (format #f "[Win: ~a]" window))
     (e (format #f "[Unknown: ~a]" e))))
 
-(define (read-while xdoui p update unget-last)
-  (let read-stuff ((acc '()) 
-                   (ch (get-next-char xdoui #f)))
-    (if ch
-        (match ch
-          ((? (λ (c) (or (eqv? c KEY_BACKSPACE) (eqv? c #\backspace))))
-           (let ((acc (if (null? acc) '() (cdr acc))))
-             (update acc) 
-             (read-stuff acc (get-next-char xdoui #f))))
-          ((? (λ (c) (or (eqv? c #\esc) (eqv? c #\x03))))
-           (throw 'abort (cons ch acc) "Input aborted"))
-          ((? (λ (c) (and (not (char? c)) (> c 255))) key)
-           (prompt-flash xdoui "Invalid character (~a)" key)
-           (read-stuff acc (get-next-char xdoui #f)))
-          ((? p key)
-           (let ((acc (cons ch acc)))
-             (update acc)
-             ;(set-prompt xdoui "> ~{~a~}" (reverse acc))
-             (read-stuff acc (get-next-char xdoui #f)))) 
-          (else 
-            (if (and unget-last (not (eqv? ch #\newline))) (ungetch ch))
-            acc))
-        (read-stuff acc (get-next-char xdoui #f)))))
+(define-class <xdoui-dialog-prompt> ()
+  (xdoui #:getter get-xdoui #:init-keyword #:xdoui)
+  (prompt #:getter get-prompt #:init-keyword #:prompt)
+  (win #:accessor window)
+  (swin #:accessor subwindow)
+  (input #:accessor input-row))
+
+(define (make-dialog-prompt xdoui prompt)
+  (let ((p (make <xdoui-dialog-prompt> #:xdoui xdoui #:prompt prompt))
+        (myx (getmaxyx (get-screen xdoui))))
+    (let* ((w (floor (/ (cadr myx) 3)))
+           (x (floor (/ (- (cadr myx) w) 2)))
+           (y (- (floor (/ (car myx) 2)) 2))
+           (win (newwin 4 w y x))) 
+      (let ((swin (derwin win 2 (- w 2) 1 1))) 
+        (let ((input (derwin win 1 (- (- w 4) (string-length prompt)) 1 (+ 2 (string-length prompt)))))  
+          (set! (window p) win) 
+          (set! (subwindow p) swin) 
+          (set! (input-row p) input) 
+          (box (window p) (acs-vline) (acs-hline))
+          (refresh (window p)) 
+          (attr-set! (input-row p) A_REVERSE)
+          (update-dialog-prompt p '()) 
+          p)))))
+
+(define-method (update-dialog-prompt (p <xdoui-dialog-prompt>) acc)
+  (let ((w (getmaxx (get-screen (get-xdoui p)))))
+    (addstr (subwindow p) (get-prompt p) #:x 0 #:y 0)
+    (hline (input-row p) (bold #\space)  w #:x 0 #:y 0) 
+    (touchwin (window p))
+    (refresh (window p)) 
+    (addstr (input-row p) (list->string (reverse (take acc w))) #:x 0 #:y 0)
+    (refresh (input-row p))))
+
+(define-method (destroy-prompt (p <xdoui-dialog-prompt>))
+  (delwin (input-row p))
+  (delwin (subwindow p))
+  (destroy-win (window p))
+  (touchwin (get-screen (get-xdoui p)))
+  (refresh (get-screen (get-xdoui p))))
+
+(define-method (prompt-flash (p <xdoui-dialog-prompt>) (str <string>) . args)
+  (addstr (subwindow p) (apply format #f str args) #:x 1 #:y 1)
+  (refresh (subwindow p)))
+
+(define (read-while-dialog xdoui p? prompt)
+  (let* ((prompt (make-dialog-prompt xdoui prompt))
+         (p (λ (acc) (update-dialog-prompt prompt acc)))
+         (p-e (λ (str . args) (apply prompt-flash prompt str args))))
+    (with-throw-handler 'abort
+      (λ ()
+         (let ((acc (read-while-generic xdoui p? p p-e)))
+           (destroy-prompt prompt)
+           (if (null? acc) '() (cdr acc))))
+      (λ (key . args)
+         (destroy-prompt prompt)))))
+
+(define (read-while-prompt xdoui p? prompt)
+  (let* ((p (λ (acc) (set-prompt xdoui "~a: ~{~a~}" prompt (map prompt-chars (reverse acc)))))
+         (p-e (λ (str . args) (apply prompt-flash xdoui str args))))
+    (let ((acc (read-while-generic xdoui p? p p-e)))
+      (if (null? acc) '() (begin (ungetch (car acc)) (cdr acc))))))
+
+(define (read-while-generic xdoui p? p p-e)
+  (let ((backspace? (λ (c) (or (eqv? c KEY_BACKSPACE) (eqv? c #\backspace))))
+        (escape?    (λ (c) (or (eqv? c #\esc) (eqv? c #\x03))))
+        (finish?    (λ (c) (or (eqv? c #\x04))))
+        (no-key?    (λ (c) (and (not (char? c)) (> c 255)))))
+    (let read-stuff ((acc '())
+                     (ch (get-next-char xdoui #f)))
+      (match ch
+        (#f (read-stuff acc (get-next-char xdoui #f)))
+        ((? backspace? key)
+         (let ((acc (if (null? acc) '() (cdr acc))))
+           (p acc)
+           (read-stuff acc (get-next-char xdoui #f))))
+        ((? escape? key)
+         (throw 'abort (cons ch acc) "Input aborted"))
+        ((? finish?)
+         (cons ch acc))
+        ((? no-key? key)
+         (p-e "Invalid character (~a)" key)
+         (read-stuff acc (get-next-char xdoui #f)))
+        ((? p? key)
+         (let ((acc (cons ch acc)))
+           (p acc)
+           (read-stuff acc (get-next-char xdoui #f))))
+        (else 
+          (cons ch acc))))))
 
 #|
  |(define-syntax define-action
@@ -298,35 +377,37 @@ coding: utf-8
 (define (show-help xdoui registers state history . rest)
   "Show the description of the action called with a particular
   keybinding."
-  (values `(add-to-state ,(acons 'show-help #t '()))
+  (values `(add-to-state 'show-help #t)
           history))
 
 
 (define (prefix xdoui registers state history type . args)
-  (let ((printer (λ (acc) (set-prompt xdoui "~a prefix: ~{~a~}" (string-capitalize (symbol->string type)) (reverse acc)))))
-    (printer '())
-    (match type
-      ('text
-       (let ((result (read-while xdoui (λ (c) (not (eqv? c #\newline))) printer #f)))
-         (values `(value ,(list->string (reverse result)))
-                 (append result history))))
-      ('number
-       (let ((result (read-while xdoui char-numeric? printer #t)))
-         (cond ((locale-string->integer (list->string (reverse result)))
-                => (λ (r) (values `(value ,r) (append result history))))
-               (else (throw 'abort (append result history) "Not a valid integer")))))
-      ('position
-       (let ((result (read-while xdoui (λ (c) (or (eqv? c #\x) (char-numeric? c))) printer #t)))
-         (let ((es (string-split (list->string (reverse result)) #\x)))
-           (if (<= (length es) 2)
-               (let ((es (map (λ (e) (or (locale-string->integer e) 0)) es)))
-                 (values `(value ,(if (> (length es) 1)
-                                      es
-                                      (append es '(0))))
-                         (append result history)))
-               (throw 'abort (append result history) "Too many x's in the string")))))
-      (else
-        (throw 'abort history "This type of prefix isn't implemented yet.")))))
+  (match type
+    ('text
+     (let ((result (read-while-dialog xdoui (λ (c) (not (eqv? c #\newline))) "Text")))
+       (if (null? result)
+           (throw 'abort (append result history) "Empty string")
+           (let ((str (list->string (reverse result))))
+             (values `(add-to-state prefix ,str)
+                     (cons str history))))))
+    ('number
+     (let ((result (read-while-prompt xdoui char-numeric? "Number prefix")))
+       (cond ((locale-string->integer (list->string (reverse result)))
+              => (λ (r) (values `(add-to-state prefix ,r)
+                                (cons r history))))
+             (else (throw 'abort (append result history) "Not a valid integer")))))
+    ('position
+     (let ((result (read-while-dialog xdoui (λ (c) (or (eqv? c #\x) (char-numeric? c))) "Position prefix")))
+       (let ((es (string-split (list->string (reverse result)) #\x)))
+         (if (<= (length es) 2)
+             (let ((es (map (λ (e) (or (locale-string->integer e) 0)) es)))
+               (values `(add-to-state prefix ,(if (> (length es) 1)
+                                                  es
+                                                  (append es '(0))))
+                       (append result history)))
+             (throw 'abort (append result history) "Too many x's in the string")))))
+    (else
+      (throw 'abort history "This type of prefix isn't implemented yet."))))
 
 (define (get-mouse-position xdoui registers state history . rest)
   "Get the current mouse position, either print to main-window or
@@ -379,8 +460,8 @@ coding: utf-8
             (λ (ƒ . args)
                (catch 'abort
                  (λ ()
-                    (let-values 
-                      (((result . new-history) (apply ƒ xdoui registers state history args)))
+                    (let-values (((result . new-history) (apply ƒ xdoui registers state history args)))
+                      (debug-print xdoui "~a~%" (vhash-assv 'prefix state))
                       (if (not (boolean? result))
                           (debug-print xdoui "Result: ~S~%" result))
                       (let ((history (if (not (null? new-history)) 
@@ -388,13 +469,13 @@ coding: utf-8
                                          history))) 
                         (match result
                           (('set-register type reg . _)
-                           (set-prompt xdoui "> ~{~a~^-~}" (reverse history)) 
+                           (set-prompt xdoui "> ~{~a~^-~}" (map prompt-chars (reverse history))) 
                            (cmd-loop (vhash-consq type reg state) history parse-tree))
                           (('new-registers regs) 
                            `(update-registers ,regs))
-                          (('add-to-state states)
-                           (let ((result (fold (λ (e r) (vhash-consv (car e) (cdr e) r)) state states)))
-                             (cmd-loop result history parse-tree)))
+                          (('add-to-state k v)
+                           (let ((state (vhash-consv k v state)))
+                             (cmd-loop state history parse-tree)))
                           (('value value) (print xdoui #f "Result: ~a~%" value))
                           (_ result)))))
                  (λ (abort history reason)
@@ -406,14 +487,14 @@ coding: utf-8
            (let ((ch (get-next-char xdoui (if timeout (car timeout) #f))))
              (if ch
                  (let ((history (cons ch history)))
-                   (set-prompt xdoui "> ~{~a~^-~}" (reverse history))
+                   (set-prompt xdoui "> ~{~a~^-~}" (map prompt-chars (reverse history)))
                    (if (char? ch)
                        (if (char-numeric? ch)
                            (begin
                              (ungetch ch)
-                             (let* ((res (read-while xdoui char-numeric? (λ (acc) (set-prompt xdoui "> ~{~a~}" (reverse acc))) #t))
+                             (let* ((res (read-while-prompt xdoui char-numeric? ">"))  
                                     (v (locale-string->integer (list->string (reverse res)))))
-                               (cmd-loop (vhash-consv 'prefix-number v state)
+                               (cmd-loop (vhash-consv 'prefix v state)
                                          (cons v (cdr history))
                                          branch)))
                            (let ((new-branch (assq ch branch)))
