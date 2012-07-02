@@ -155,7 +155,8 @@ coding: utf-8
   (match ch
     (#\newline "\\n")
     (#\tab "\\t")
-    (#\esc "\\escape")
+    (#\esc "\\esc")
+    ((? string? str) (if (> (string-length str) 10) (string-concatenate (list (string-take str 8) "..")) str))
     (else ch)))
 
 (define-method (resize-xdoui! (xdoui <xdoui>))
@@ -282,7 +283,7 @@ coding: utf-8
           p)))))
 
 (define-method (update-dialog-prompt (p <xdoui-dialog-prompt>) acc)
-  (let ((w (getmaxx (get-screen (get-xdoui p)))))
+  (let ((w (getmaxx (input-row p))))
     (addstr (subwindow p) (get-prompt p) #:x 0 #:y 0)
     (hline (input-row p) (bold #\space)  w #:x 0 #:y 0) 
     (touchwin (window p))
@@ -303,8 +304,10 @@ coding: utf-8
 
 (define (read-while-dialog xdoui p? prompt)
   (let* ((prompt (make-dialog-prompt xdoui prompt))
-         (p (λ (acc) (update-dialog-prompt prompt acc)))
-         (p-e (λ (str . args) (apply prompt-flash prompt str args))))
+         (p (λ (acc)
+               (update-dialog-prompt prompt acc)))
+         (p-e (λ (str . args)
+                 (apply prompt-flash prompt str args))))
     (with-throw-handler 'abort
       (λ ()
          (let ((acc (read-while-generic xdoui p? p p-e)))
@@ -314,8 +317,10 @@ coding: utf-8
          (destroy-prompt prompt)))))
 
 (define (read-while-prompt xdoui p? prompt)
-  (let* ((p (λ (acc) (set-prompt xdoui "~a: ~{~a~}" prompt (map prompt-chars (reverse acc)))))
-         (p-e (λ (str . args) (apply prompt-flash xdoui str args))))
+  (let* ((p (λ (acc)
+               (set-prompt xdoui "~a: ~{~a~}" prompt (map prompt-chars (reverse acc)))))
+         (p-e (λ (str . args)
+                 (apply prompt-flash xdoui str args))))
     (let ((acc (read-while-generic xdoui p? p p-e)))
       (if (null? acc) '() (begin (ungetch (car acc)) (cdr acc))))))
 
@@ -500,7 +505,7 @@ coding: utf-8
                            (let ((new-branch (assq ch branch)))
                              (if new-branch
                                  (cmd-loop state history (cdr new-branch))
-                                 (throw 'abort history (format #f "~c is not a recognized character" ch)))))
+                                 (throw 'abort history (format #f "~a is not a recognized character" (prompt-chars ch))))))
                        (throw 'abort history "Aborted")))
                  (if timeout 
                      (begin
@@ -547,7 +552,7 @@ coding: utf-8
                    (_
                      (loop registers)))))))
       (λ (key history reason)
-         (print xdoui #f "Abort: ~a [~{~a~^-~}]\n" reason (reverse history))
+         (print xdoui #f "Abort: ~a [~{~a~^-~}]\n" reason (map prompt-chars (reverse history)))
          (loop registers)))))
 
 (define (main args)
