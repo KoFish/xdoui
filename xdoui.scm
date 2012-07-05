@@ -131,9 +131,6 @@ coding: utf-8
                   (timeout! (get-screen xdoui) -1)
                   ch)))))))
 
-(define (deref-symbol sym)
-  (false-if-exception (module-ref (current-module) sym)))
-
 (define (destroy-win win)
   (let ((s (normal #\sp)))
     (border win s s s s s s s s)
@@ -525,7 +522,7 @@ coding: utf-8
          (apply call-proc ƒ args))
         (('quit reason) `(quit ,reason))
         (((? symbol? symbol) . args)
-         (cond ((deref-symbol symbol) 
+         (cond ((false-if-exception (module-ref (current-module) symbol))
                 => (λ (ƒ)
                       (cmd-loop state history (cons ƒ branch))))
                (else (throw 'abort history (format #f "No such function: (~S)" symbol)))))
