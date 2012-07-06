@@ -386,11 +386,11 @@ coding: utf-8
 (define (show-help xdoui registers state history . rest)
   "Show the description of the action called with a particular
   keybinding."
-  (values `(add-to-state 'show-help #t)
+  (values `(add-to-state show-help #t)
           history))
 
 (define (prefix-to-reg xdoui registers state history . args)
-  "Set the content of a register, specified by the store register to the 
+  "Set the content of a register, specified by the store register, to the 
   current prefix value."
   (cond ((vhash-assv 'store state)
          => (λ (reg)
@@ -400,6 +400,7 @@ coding: utf-8
                                     history))))))))
 
 (define (set-prefix xdoui registers state history type . args)
+  "Set the prefix."
   (match type
     ('text
      (let ((result (read-while-dialog xdoui (λ (c) (not (eqv? c #\newline))) "Text")))
@@ -533,8 +534,9 @@ coding: utf-8
                                           (string-split help-text #\newline))
                                      " ")))))
                (begin
-                 (prompt-flash xdoui "[~S]" symbol))))
-         (apply call-proc ƒ args))
+                 (prompt-flash xdoui "[~S]" symbol)
+                 (apply call-proc ƒ args))))
+         )
         (('quit reason) `(quit ,reason))
         (((? symbol? symbol) . args)
          (cond ((false-if-exception (module-ref (current-module) symbol))
