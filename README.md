@@ -35,8 +35,7 @@ start the application you get a parse-tree accepting keys by object to act on;
 There are also a bunch of "helper" functions, such as `"` and `'` which changes
 registers to use (more on that in a bit). There is also the concept of prefixes.
 
-Prefix
-++++++
+### Prefix
 
 A prefix is data that can be used in different functions besides the values
 stored in registers. Prefixes always has to be entered manually and there are a
@@ -45,8 +44,7 @@ number keys before any command, string prefixes can be entered by pressing
 enter, entering the text in the dialog that pops up, terminating with enter or
 ctrl-d, and then doing the command.
 
-Registers
-+++++++++
+### Registers
 
 When running XDO UI you have access to a whole bunch of registers, easiest of
 them to use is probably a-z. When doing a command you can specify two different
