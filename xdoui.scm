@@ -27,8 +27,7 @@ coding: utf-8
   `((#\" change-register store) 
     (#\' change-register load) 
     (#\h show-help)
-    (#\newline prefix text)
-    (#\x prefix number)
+    (#\newline set-prefix text)
     (#\r prefix-to-reg)
     (#\t (#\p ,(λ (xdoui regs state . rest)
                   (debug-print xdoui "Debug!!\n")
@@ -37,12 +36,12 @@ coding: utf-8
                   (print xdoui 'test "Test!!\n")
                   (print xdoui #f "Main!!\n")) test-print)
          (#\a ,(λ (xdoui regs state . rest)
-                  (add-subwindow! xdoui 'test)
+                  (add-to-sidebar! xdoui 'test)
                   (print xdoui 'test "Test window!!\n")) test-add)
          (#\d ,(λ (xdoui regs state . rest)
-                  (remove-subwindow! xdoui 'test)) test-delete))
-    (#\p (#\r print-register)
-         (timeout 300 prefix position))
+                  (remove-from-sidebar! xdoui 'test)) test-delete))
+    (#\p (#\e set-prefix position)
+         (timeout 300 print-register))
     (#\m (#\g (#\p get-mouse-position))
          (#\p put-mouse-position)
          (#\w get-mouse-window)
@@ -61,12 +60,12 @@ coding: utf-8
                     (register  get-register  set-register!))
 
 (define-class <xdoui> ()
-  (xdo           #:getter   get-xdo       #:init-keyword #:xdo) 
-  (scr           #:getter   get-screen    #:init-keyword #:scr) 
-  (right-width   #:accessor right-width   #:init-value   0)  
-  (extra-windows #:accessor extra-windows #:init-value   '()) 
-  (main-window   #:accessor main-window   #:init-value   #f)  
-  (prompt-window #:accessor prompt-window #:init-value   #f))
+  (xdo             #:getter   get-xdo         #:init-keyword #:xdo) 
+  (scr             #:getter   get-screen      #:init-keyword #:scr) 
+  (right-width     #:accessor right-width     #:init-value   0)  
+  (sidebar-windows #:accessor sidebar-windows #:init-value   '()) 
+  (main-window     #:accessor main-window     #:init-value   #f)  
+  (prompt-window   #:accessor prompt-window   #:init-value   #f))
 
 (define (make-xdoui xdo scr)
   (let ((xdoui (make <xdoui> #:xdo xdo #:scr scr)))
@@ -95,7 +94,7 @@ coding: utf-8
   argument is either #f for the main window or a symbol specifing a sub
   window on the right hand side."
   (if window
-      (cond ((assv-ref (extra-windows xdoui) window)
+      (cond ((assv-ref (sidebar-windows xdoui) window)
              => (λ (w) (let ((w (cdr w)))
                             (addstr w str)
                             (refresh w)))))
@@ -107,11 +106,11 @@ coding: utf-8
   (print xdoui window (apply format #f str a args)))
 
 (define* (debug-print xdoui str . arguments)
-  (cond ((get-subwindow! xdoui 'debug)
+  (cond ((get-sidebar-window! xdoui 'debug)
          => (λ (win)
                (apply print xdoui 'debug str arguments))) 
         (else (begin
-                (add-subwindow! xdoui 'debug)
+                (add-to-sidebar! xdoui 'debug)
                 (apply debug-print xdoui str arguments)))))
 
 (define-method (get-next-char (xdoui <xdoui>) timeout)
@@ -144,21 +143,29 @@ coding: utf-8
     (append (make-list q (1+ r)) (make-list (- d q) r))))
 
 (define (take lst n)
+  "Reimplementation of take since the default guile implementation does not allow
+  taking more elements than is in the list."
   (match lst
     ('() '())
     ((h . r) (if (> n 0) (cons h (take r (1- n))) '()))))
 
-(define (prompt-chars ch)
+(define (quote-chars ch)
+  "Quote characters to be printed in the UI."
   (match ch
     (#\newline "\\n")
     (#\tab "\\t")
     (#\esc "\\esc")
-    ((? string? str) (if (> (string-length str) 10) (string-concatenate (list (string-take str 8) "..")) str))
+    ((? string? str) (if (> (string-length str) 10)
+                         (string-concatenate (list (string-take str 8) ".."))
+                         str))
     (else ch)))
+
+(define (abort history . reason)
+  (throw 'abort history (if (> (length reason) 0) (car reason) "Aborted")))
 
 (define-method (resize-xdoui! (xdoui <xdoui>))
   "Resize the whole screen to the current terminal size, it also clears the
-  content of all the subwindows."
+  content of all the sidebar windows."
   (let*  ((scr (get-screen xdoui))
           (my (getmaxy scr)) 
           (mx (getmaxx scr)) 
@@ -169,15 +176,15 @@ coding: utf-8
     (set! (prompt-window xdoui) (subwin scr 1 mx (- my 2) 0))
     (set! (right-width xdoui) width)
     (scrollok! (main-window xdoui) #t)
-    (resize-subwindows! xdoui)
+    (resize-sidebar! xdoui)
     (hline scr (acs-hline) (- mx width) #:y (- my 3) #:x 0)  
     (refresh (main-window xdoui))
     (refresh (prompt-window xdoui))))
 
-(define-method (resize-subwindows! (xdoui <xdoui>))
-  "Recreates all the subwindows in proper new size accord to the size of the
+(define-method (resize-sidebar! (xdoui <xdoui>))
+  "Recreates all the sidebar windows in proper new size accord to the size of the
   terminal."
-  (let ((win-count (length (extra-windows xdoui)))) 
+  (let ((win-count (length (sidebar-windows xdoui)))) 
     (if (positive? win-count) 
         (let* ((my (getmaxy (get-screen xdoui))) 
                (mx (getmaxx (get-screen xdoui)))
@@ -185,8 +192,8 @@ coding: utf-8
                (whsa (reverse (fold (λ (e a) (cons (+ e (car a)) a)) (list 0) whs)))
                (w (right-width xdoui)))
           (let-values (((wh q) (floor/ (- my 3) win-count))) 
-            (set! (extra-windows xdoui) 
-              ;; Destroy the old subwindows and create new ones to replace 
+            (set! (sidebar-windows xdoui) 
+              ;; Destroy the old windows and create new ones to replace 
               ;; them.
               (map (λ (e wh x)
                       (cond ((cdr e) 
@@ -198,10 +205,10 @@ coding: utf-8
                         (scrollok! wini #t) 
                         (refresh wini) 
                         (cons (car e) (cons wino wini)))) 
-                   (extra-windows xdoui)
+                   (sidebar-windows xdoui)
                    whs
                    whsa)) 
-            ;; Draw frames around each subwindow and write the title over the
+            ;; Draw frames around each windows and write the title over the
             ;; top border.
             (map (λ (e p) 
                     (let ((n (car e))
@@ -216,42 +223,43 @@ coding: utf-8
                                   (acs-llcorner) (acs-lrcorner))) 
                       (addstr wo (string-capitalize (symbol->string n)) #:x 2 #:y 0)
                       (refresh wo)))
-                 (extra-windows xdoui)
+                 (sidebar-windows xdoui)
                  (cons #f (cdr (make-list win-count #t)))))))))
 
-(define-method (add-subwindow! (xdoui <xdoui>) name)
-  (cond ((assv name (extra-windows xdoui)) #f)
-        (else (set! (extra-windows xdoui) (assv-set! (extra-windows xdoui) name #f)))) 
-  (resize-subwindows! xdoui))
+(define-method (add-to-sidebar! (xdoui <xdoui>) name)
+  (cond ((assv name (sidebar-windows xdoui)) #f)
+        (else (set! (sidebar-windows xdoui) (assv-set! (sidebar-windows xdoui) name #f)))) 
+  (resize-sidebar! xdoui))
 
-(define-method (remove-subwindow! (xdoui <xdoui>) name)
-  (cond ((assv name (extra-windows xdoui))
+(define-method (remove-from-sidebar! (xdoui <xdoui>) name)
+  (cond ((assv name (sidebar-windows xdoui))
          => (λ (win)
                (let ((wini (cddr win))
                      (wino (cadr win)))
-                 (set! (extra-windows xdoui) (assv-remove! (extra-windows xdoui) name))
-                 (destroy-win wini)
-                 (destroy-win wino)
-                 (resize-subwindows! xdoui))))
+                 (set! (sidebar-windows xdoui) (assv-remove! (sidebar-windows xdoui) name))
+                 (destroy-win wini) ; It's important to delete the windows in the right
+                 (destroy-win wino) ; order, inner first and then outer.
+                 (resize-sidebar! xdoui))))
         (else #f)))
 
-(define-method (get-subwindow (xdoui <xdoui>) name)
-  (cond ((assv name (extra-windows xdoui))
+(define-method (get-sidebar-window (xdoui <xdoui>) name)
+  (cond ((assv name (sidebar-windows xdoui))
          => (λ (v) (cdr v)))
         (else #f)))
 
-(define-method (get-subwindow! (xdoui <xdoui>) name)
-  (cond ((get-subwindow xdoui name) => (λ (w) (cdr w)))
-        (else (add-subwindow! xdoui name)
-              (get-subwindow! xdoui name))))
+(define-method (get-sidebar-window! (xdoui <xdoui>) name)
+  (cond ((get-sidebar-window xdoui name) => (λ (w) (cdr w)))
+        (else (add-to-sidebar! xdoui name)
+              (get-sidebar-window! xdoui name))))
 
-(define* (update-register registers key value) 
+(define (update-register registers key value) 
   (vhash-consv key value (vhash-delv key registers)))
 
 (define (register->string register) 
   (match register
     (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
     ((? window? window) (format #f "[Win: ~a]" window))
+    ((? string? str) (format #f "[String: ~s]" str))
     (e (format #f "[Unknown: ~a]" e))))
 
 (define-class <xdoui-dialog-prompt> ()
@@ -276,8 +284,7 @@ coding: utf-8
           (box (window p) (acs-vline) (acs-hline))
           (refresh (window p)) 
           (attr-set! (input-row p) A_REVERSE)
-          (update-dialog-prompt p '()) 
-          p)))))
+          (update-dialog-prompt p '()))))))
 
 (define-method (update-dialog-prompt (p <xdoui-dialog-prompt>) acc)
   (let ((w (getmaxx (input-row p))))
@@ -286,7 +293,8 @@ coding: utf-8
     (touchwin (window p))
     (refresh (window p)) 
     (addstr (input-row p) (list->string (reverse (take acc w))) #:x 0 #:y 0)
-    (refresh (input-row p))))
+    (refresh (input-row p))
+    p))
 
 (define-method (destroy-prompt (p <xdoui-dialog-prompt>))
   (delwin (input-row p))
@@ -315,11 +323,13 @@ coding: utf-8
 
 (define (read-while-prompt xdoui p? prompt)
   (let* ((p (λ (acc)
-               (set-prompt xdoui "~a: ~{~a~}" prompt (map prompt-chars (reverse acc)))))
+               (set-prompt xdoui "~a: ~{~a~}" prompt (map quote-chars (reverse acc)))))
          (p-e (λ (str . args)
                  (apply prompt-flash xdoui str args))))
     (let ((acc (read-while-generic xdoui p? p p-e)))
-      (if (null? acc) '() (begin (ungetch (car acc)) (cdr acc))))))
+      (if (not (null? acc)) 
+          (begin (ungetch (car acc)) (cdr acc))
+          '()))))
 
 (define (read-while-generic xdoui p? p p-e)
   (let ((backspace? (λ (c) (or (eqv? c KEY_BACKSPACE) (eqv? c #\backspace))))
@@ -334,10 +344,8 @@ coding: utf-8
          (let ((acc (if (null? acc) '() (cdr acc))))
            (p acc)
            (read-stuff acc (get-next-char xdoui #f))))
-        ((? escape? key)
-         (throw 'abort (cons ch acc) "Input aborted"))
-        ((? finish?)
-         (cons ch acc))
+        ((? escape? key) (abort (cons ch acc) "Input aborted"))
+        ((? finish?) (cons ch acc))
         ((? no-key? key)
          (p-e "Invalid character (~a)" key)
          (read-stuff acc (get-next-char xdoui #f)))
@@ -345,8 +353,7 @@ coding: utf-8
          (let ((acc (cons ch acc)))
            (p acc)
            (read-stuff acc (get-next-char xdoui #f))))
-        (else 
-          (cons ch acc))))))
+        (else (cons ch acc))))))
 
 #|
  |(define-syntax define-action
@@ -374,7 +381,7 @@ coding: utf-8
         (begin
           (values `(set-register ,type ,ch)
                   (cons ch history))) 
-        (throw 'abort (cons ch history) "Not a valid register, use only alphabetic characters"))))
+        (abort (cons ch history) "Not a valid register, use only alphabetic characters"))))
 
 (define (show-help xdoui registers state history . rest)
   "Show the description of the action called with a particular
@@ -382,13 +389,20 @@ coding: utf-8
   (values `(add-to-state 'show-help #t)
           history))
 
+(define (prefix-to-reg xdoui registers state history . args)
+  (cond ((vhash-assv 'store state)
+         => (λ (reg)
+               (cond ((vhash-assv 'prefix state) 
+                      => (λ (prx)
+                            (values `(add-to-register ,(cdr reg) ,(cdr prx))
+                                    history))))))))
 
-(define (prefix xdoui registers state history type . args)
+(define (set-prefix xdoui registers state history type . args)
   (match type
     ('text
      (let ((result (read-while-dialog xdoui (λ (c) (not (eqv? c #\newline))) "Text")))
        (if (null? result)
-           (throw 'abort (append result history) "Empty string")
+           (abort (append result history) "Empty string")
            (let ((str (list->string (reverse result))))
              (values `(add-to-state prefix ,str)
                      (cons str history))))))
@@ -397,19 +411,18 @@ coding: utf-8
        (cond ((locale-string->integer (list->string (reverse result)))
               => (λ (r) (values `(add-to-state prefix ,r)
                                 (cons r history))))
-             (else (throw 'abort (append result history) "Not a valid integer")))))
+             (else (abort (append result history) "Not a valid integer")))))
     ('position
      (let ((result (read-while-dialog xdoui (λ (c) (or (eqv? c #\x) (char-numeric? c))) "Position prefix")))
        (let ((es (string-split (list->string (reverse result)) #\x)))
          (if (<= (length es) 2)
              (let ((es (map (λ (e) (or (locale-string->integer e) 0)) es)))
-               (values `(add-to-state prefix ,(if (> (length es) 1)
-                                                  es
-                                                  (append es '(0))))
-                       (append result history)))
-             (throw 'abort (append result history) "Too many x's in the string")))))
+               (let ((es (if (> (length es) 1) (cons (car es) (cadr es)) (reverse (cons 0 (car es))))))
+                 (values `(add-to-state prefix ,es)
+                         (append result history))))
+             (abort (append result history) "Too many x's in the string")))))
     (else
-      (throw 'abort history "This type of prefix isn't implemented yet."))))
+      (abort history "This type of prefix isn't implemented yet."))))
 
 (define (get-mouse-position xdoui registers state history . rest)
   "Get the current mouse position, either print to main-window or
@@ -418,13 +431,12 @@ coding: utf-8
          => (λ (result)
                (cond ((vhash-assv 'store state)
                       => (λ (value)
-                            (values `(new-registers ,(update-register registers (cdr value) 
-                                                                      (cons (car result) (cadr result))))
+                            (values `(add-to-register ,(cdr value) ,(cons (car result) (cadr result)))
                                     history)))
                      (else (values `(value ,result)
                                    history)))))
         (else 
-          (throw 'abort history "Could not get mouse position"))))
+          (abort history "Could not get mouse position"))))
 
 (define (print-register xdoui registers state history . rest)
   "Print the content of the register specified in the load or store
@@ -435,12 +447,12 @@ coding: utf-8
                       => (λ (cnt)
                             (print xdoui #f "Register ~c: ~a\n" (car cnt) (register->string (cdr cnt)))))
                      (else
-                       (throw 'abort history (format #f "No content in register \"~c\"" (cdr reg)))))))
+                       (abort history (format #f "No content in register \"~c\"" (cdr reg)))))))
         (else
-          (throw 'abort history "No register specified"))))
+          (abort history "No register specified"))))
 
 (define (print-all-registers xdoui registers)
-  (cond ((get-subwindow! xdoui 'registers)
+  (cond ((get-sidebar-window! xdoui 'registers)
          => (λ (scr)
                (let ((x (getcurx scr))
                      (mx (getmaxx scr)))
@@ -451,7 +463,7 @@ coding: utf-8
                              0 registers)
                  (refresh scr)))) 
         (else (let ((myx (getmaxyx (get-screen xdoui))))
-                (add-subwindow! xdoui 'registers)
+                (add-to-sidebar! xdoui 'registers)
                 (print-all-registers xdoui registers)))))
 
 (define* (do-command xdoui registers parse-tree)
@@ -460,7 +472,7 @@ coding: utf-8
                  (branch parse-tree))
     (let ((call-proc 
             (λ (ƒ . args)
-               (catch 'abort
+               (with-throw-handler 'abort
                  (λ ()
                     (let-values (((result . new-history) (apply ƒ xdoui registers state history args)))
                       (debug-print xdoui "~a~%" (vhash-assv 'prefix state))
@@ -471,42 +483,38 @@ coding: utf-8
                                          history))) 
                         (match result
                           (('set-register type reg . _)
-                           (set-prompt xdoui "> ~{~a~^-~}" (map prompt-chars (reverse history))) 
+                           (set-prompt xdoui "> ~{~a~^-~}" (map quote-chars (reverse history))) 
                            (cmd-loop (vhash-consq type reg state) history parse-tree))
-                          (('new-registers regs) 
-                           `(update-registers ,regs))
                           (('add-to-state k v)
                            (let ((state (vhash-consv k v state)))
                              (cmd-loop state history parse-tree)))
                           (('value value) (print xdoui #f "Result: ~a~%" value))
                           (_ result)))))
-                 (λ (abort history reason)
-                    (throw 'abort history reason))))))
+                 (λ (key . args) #f)))))
       (match branch 
         ((((? char? char) . _) . _)
          (print-all-registers xdoui registers)
          (let ((timeout (assv-ref branch 'timeout)))
            (let ((ch (get-next-char xdoui (if timeout (car timeout) #f))))
-             (if ch
-                 (let ((history (cons ch history)))
-                   (set-prompt xdoui "> ~{~a~^-~}" (map prompt-chars (reverse history)))
-                   (if (char? ch)
-                       (if (char-numeric? ch)
-                           (begin
-                             (ungetch ch)
-                             (let* ((res (read-while-prompt xdoui char-numeric? ">"))  
-                                    (v (locale-string->integer (list->string (reverse res)))))
-                               (cmd-loop (vhash-consv 'prefix v state)
-                                         (cons v (cdr history))
-                                         branch)))
-                           (let ((new-branch (assq ch branch)))
-                             (if new-branch
-                                 (cmd-loop state history (cdr new-branch))
-                                 (throw 'abort history (format #f "~a is not a recognized character" (prompt-chars ch))))))
-                       (throw 'abort history "Aborted")))
-                 (if timeout 
-                     (begin
-                       (cmd-loop state history (cdr timeout))))))))
+             (match ch
+               (#f (if timeout (cmd-loop state history (cdr timeout))))
+               (#\x03 (abort history "Keyboard interrupt"))
+               (else (let ((history (cons ch history)))
+                       (set-prompt xdoui "> ~{~a~^-~}" (map quote-chars (reverse history)))
+                       (if (char? ch)
+                           (if (char-numeric? ch)
+                               (begin
+                                 (ungetch ch)
+                                 (let* ((res (read-while-prompt xdoui char-numeric? ">"))  
+                                        (v (locale-string->integer (list->string (reverse res)))))
+                                   (cmd-loop (vhash-consv 'prefix v state)
+                                             (cons v (cdr history))
+                                             branch)))
+                               (let ((new-branch (assq ch branch)))
+                                 (if new-branch
+                                     (cmd-loop state history (cdr new-branch))
+                                     (abort history (format #f "~a is not a recognized character" (quote-chars ch))))))
+                           (abort history "Aborted"))))))))
         (((? procedure? ƒ) (? symbol? symbol) . args)
          (let ((help? (vhash-assv 'show-help state)))
            (if (and help? (cdr help?))
@@ -525,7 +533,7 @@ coding: utf-8
          (cond ((false-if-exception (module-ref (current-module) symbol))
                 => (λ (ƒ)
                       (cmd-loop state history (cons ƒ branch))))
-               (else (throw 'abort history (format #f "No such function: (~S)" symbol)))))
+               (else (abort history (format #f "No such function: (~S)" symbol)))))
         (_ (debug-print xdoui "Unknown: ~S\n" branch))))))
 
 (define (main-loop xdoui)
@@ -542,14 +550,18 @@ coding: utf-8
                (begin
                  (for-each (λ (e) 
                               (if (cdr e) (refresh (cddr e))))
-                           (extra-windows xdoui))
+                           (sidebar-windows xdoui))
                  (match result
+                   (('add-to-register key value)
+                    (let ((new-registers (vhash-consv key value (vhash-delv key registers))))
+                      (loop new-registers)))
                    (('update-registers (? vlist? new-registers))
                     (loop new-registers))
                    (_
                      (loop registers)))))))
       (λ (key history reason)
-         (print xdoui #f "Abort: ~a [~{~a~^-~}]\n" reason (map prompt-chars (reverse history)))
+         (set-prompt xdoui "-- aborted --")
+         (print xdoui #f "Abort: ~a [~{~a~^-~}]\n" reason (map quote-chars (reverse history)))
          (loop registers)))))
 
 (define (main args)
