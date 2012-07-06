@@ -390,6 +390,8 @@ coding: utf-8
           history))
 
 (define (prefix-to-reg xdoui registers state history . args)
+  "Set the content of a register, specified by the store register to the 
+  current prefix value."
   (cond ((vhash-assv 'store state)
          => (λ (reg)
                (cond ((vhash-assv 'prefix state) 
@@ -416,16 +418,15 @@ coding: utf-8
      (let ((result (read-while-dialog xdoui (λ (c) (or (eqv? c #\x) (char-numeric? c))) "Position prefix")))
        (if (> (length result) 0)
            (let ((es (string-split (list->string (reverse result)) #\x)))
-             (cond ((> (length es) 2) 
-                    (abort (append result history) "Too many x's in the string"))
-                   ((or (eq? (length es) 2) (eq? (length es) 1))
+             (cond ((or (eq? (length es) 1) (eq? (length es) 2))
                     (let ((es (map (λ (e) (or (locale-string->integer e) 0)) es)))
                       (let ((es (if (> (length es) 1) 
                                     (cons (car es) (cadr es))
                                     (reverse (cons 0 (car es))))))
                         (values `(add-to-state prefix ,es)
-                                (append result history))))) 
-                   (else (abort (append result history) "Not enough characters entered"))))
+                                (append result history)))))
+                   ((> (length es) 2) 
+                    (abort (append result history) "Too many x's in the string"))))
            (abort (append result history) "Not enough characters entered"))))
     (else
       (abort history "This type of prefix isn't implemented yet."))))
