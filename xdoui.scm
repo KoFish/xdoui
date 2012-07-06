@@ -49,7 +49,7 @@ coding: utf-8
          (#\w get-mouse-window)
          (#\c click-mouse))
     (#\w (#\p put-window-position)
-         (#\g (#\a get-active-window)
+         (#\g (#\a get-window)
               (#\p get-window-position))
          (timeout 300 get-active-window))
     (#\q quit "Exited by user"))) 
@@ -341,7 +341,12 @@ coding: utf-8
       (λ ()
          (let ((acc (read-while-generic xdoui p? p p-e)))
            (destroy-prompt prompt)
-           (if (null? acc) '() (cdr acc))))
+           (if (not (null? acc))
+               (begin
+                 (if (not (eqv? (car acc) #\newline)) 
+                   (ungetch (car acc)))
+                 (cdr acc)) 
+               '())))
       (λ (key . args)
          (destroy-prompt prompt)))))
 
@@ -456,19 +461,55 @@ coding: utf-8
     (else
       (abort history "This type of prefix isn't implemented yet."))))
 
+(define (add-to-register reg val history)
+  (values `(add-to-register ,reg ,val)
+          history))
+
+(define (value val history)
+  (values `(value ,val) history))
+
+(define (get-value state name)
+  (cond ((vhash-assv name state) => (λ (s) (cdr s)))
+        (else #f)))
+
+(define (get-window-position xdoui registers state history . rest)
+  (let ((sreg (get-value state 'store))
+        (lreg (get-value state 'load)))
+    (let ((w (cond ((get-value registers lreg)
+                    => (λ (v) 
+                          (match v
+                            ((? window? w) w)
+                            (((? number?) . (? number?))
+                             (debug-print xdoui "Position ~a in load reg\n" v)
+                             (cond ((xdo-get-mouse-location (get-xdo xdoui))
+                                    => (λ (old-pos) 
+                                          (xdo-move-mouse (get-xdo xdoui) v)
+                                          (let ((w (xdo-get-window-at-mouse (get-xdo xdoui))))
+                                            (xdo-move-mouse (get-xdo xdoui) old-pos)
+                                            w))) 
+                                   (else 
+                                     (debug-print xdoui "Could not get mouse position\n")
+                                     #f)))
+                            (else 
+                              (debug-print xdoui "Not a useful value in register\n")
+                              #f))))
+                   (else #f))))
+      (cond ((xdo-get-window-location (get-xdo xdoui) #:window w)
+             => (λ (pos) 
+                   (if sreg
+                       (add-to-register sreg pos history)
+                       (value pos history))))))))
+
 (define (get-mouse-position xdoui registers state history . rest)
   "Get the current mouse position, either print to main-window or
   store in specified register."
-  (cond ((xdo-get-mouse-location (get-xdo xdoui))
-         => (λ (result)
-               (cond ((vhash-assv 'store state)
-                      => (λ (value)
-                            (values `(add-to-register ,(cdr value) ,(cons (car result) (cadr result)))
-                                    history)))
-                     (else (values `(value ,result)
-                                   history)))))
-        (else 
-          (abort history "Could not get mouse position"))))
+  (let ((sreg (get-value state 'store)))
+    (cond ((xdo-get-mouse-location (get-xdo xdoui))
+           => (λ (pos)
+                 (if sreg
+                     (add-to-register sreg pos history)
+                     (value pos history))))
+          (else (abort history "Could not get mouse position")))))
 
 (define (print-register xdoui registers state history . rest)
   "Print the content of the register specified in the load or store
