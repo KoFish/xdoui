@@ -75,14 +75,16 @@ coding: utf-8
                   (remove-from-sidebar! xdoui 'test)) test-delete))
     (#\p (#\e set-prefix position)
          (timeout 300 print-register))
-    (#\m (#\g (#\p get-mouse-position))
+    (#\m (#\g (#\p get-mouse-position)
+              (#\w get-window at-mouse))
          (#\p put-mouse-position)
          (#\w get-mouse-window)
          (#\c click-mouse))
     (#\w (#\p put-window-position)
-         (#\g (#\a get-window)
-              (#\p get-window-position))
-         (timeout 300 get-active-window))
+         (#\g (#\a get-window active)
+              (#\p get-window-position)
+              (#\n get-window-name))
+         (timeout 700 get-window focused))
     (#\q quit "Exited by user"))) 
 
 ;;
@@ -125,7 +127,7 @@ coding: utf-8
 (define (register->string register) 
   (match register
     (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
-    ((? window? window) (format #f "[Win: ~a]" window))
+    ((? xdo-window? window) (format #f "[Win: ~a]" window))
     ((? string? str) (format #f "[String: ~s]" str))
     (e (format #f "[Unknown: ~a]" e))))
 
@@ -525,7 +527,7 @@ coding: utf-8
     (let ((w (cond ((get-value registers lreg)
                     => (λ (v) 
                           (match v
-                            ((? window? w) w)
+                            ((? xdo-window? w) w)
                             (((? number?) . (? number?))
                              (debug-print xdoui "Position ~a in load reg\n" v)
                              (cond ((xdo-get-mouse-location (get-xdo xdoui))
@@ -558,6 +560,25 @@ coding: utf-8
                      (value pos history))))
           (else (abort history "Could not get mouse position")))))
 
+(define (get-window xdoui registers state history selector . args)
+  (let ((sreg (get-value state 'store))
+        (ƒ (match selector
+                  ('active xdo-get-active-window)
+                  ('focused xdo-get-focused-window)
+                  ('at-mouse xdo-get-window-at-mouse)
+                  (else #f))))
+    (if ƒ (cond 
+             ((ƒ (get-xdo xdoui))
+              => (λ (w)
+                    (if (xdo-window? w)
+                        (if sreg
+                            (add-to-register sreg w history)
+                            (value w history))
+                        (abort history "Did not get a window"))))
+             (else 
+               (abort history "Failed to get any window")))
+        (abort history "No such function"))))
+
 (define (print-register xdoui registers state history . rest)
   "Print the content of the register specified in the load or store
   register."
@@ -583,6 +604,7 @@ coding: utf-8
                (let ((x (getcurx scr))
                      (mx (getmaxx scr)))
                  (vhash-fold (λ (key value count)
+                                (hline scr (normal #\Space) mx #:x 0 #:y count)
                                 (addstr scr (format #f "Reg '~a': ~a" key (register->string value)) 
                                         #:x 0 #:y count #:n mx)
                                 (1+ count)) 
