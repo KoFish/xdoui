@@ -3,6 +3,33 @@
 coding: utf-8
 !#
 
+;; xdoui.scm 
+
+;; Copyright 2012 Krister Svanlund <krister dot svanlund at gmail dot com> 
+
+;; This file is part of XDO UI
+
+;; xdoui is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as
+;; published by the Free Software Foundation, either version 3
+;; of the License, or (at your option) any later version.
+
+;; xdoui is distributed in the hope that it will be useful, but
+;; WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public
+;; License along with this program If not, see
+;; <http://www.gnu.org/licenses/>.
+
+;;; Commentary:
+;;
+;; A ncurses based UI for libxdo, provided by the xdotool
+;; project.
+;;
+;;; Code:
+
 (use-modules (ncurses curses)
              (oop goops)) 
 (use-modules (ice-9 i18n)
@@ -22,6 +49,10 @@ coding: utf-8
 (use-modules (xdo libxdo))
 
 (setlocale LC_ALL "en_US.UTF-8")
+
+;;
+;; Key bindings for the interface
+;;
 
 (define key-bindings
   `((#\" change-register store) 
@@ -54,104 +85,9 @@ coding: utf-8
          (timeout 300 get-active-window))
     (#\q quit "Exited by user"))) 
 
-(define-record-type command-type
-                    (make-command command arguments register)
-                    command?
-                    (command   get-command)
-                    (arguments get-arguments set-arguments!)
-                    (register  get-register  set-register!))
-
-(define-class <xdoui> ()
-  (xdo             #:getter   get-xdo         #:init-keyword #:xdo) 
-  (scr             #:getter   get-screen      #:init-keyword #:scr) 
-  (right-width     #:accessor right-width     #:init-value   0)  
-  (sidebar-windows #:accessor sidebar-windows #:init-value   '()) 
-  (main-window     #:accessor main-window     #:init-value   #f)  
-  (prompt-window   #:accessor prompt-window   #:init-value   #f)
-  (prompt-text     #:getter get-prompt #:setter set-prompt! #:init-value   "")
-  (flash-elements  #:accessor flashes         #:init-value   '()))
-
-(define (make-xdoui xdo scr)
-  (let ((xdoui (make <xdoui> #:xdo xdo #:scr scr)))
-    (resize-xdoui! xdoui)
-    xdoui))
-
-(define-method (draw-prompt (xdoui <xdoui>))
-  (let ((win (prompt-window xdoui))
-        (mx  (getmaxx (prompt-window xdoui))))
-    (hline win (normal #\Space) mx #:x 0 #:y 0)
-    (addstr win (get-prompt xdoui) #:x 0 #:y 0)
-    (if (not (null? (flashes xdoui)))
-        (let ((s (string-join (map car (sort-list (flashes xdoui) (λ (a b) (< (cdr a) (cdr b))))) ", ")))
-          (let ((len (string-length s)))
-            (addstr win s #:y 0 #:x (if (> (floor/ mx 2) len) (- mx len) (floor/ mx 2))))))
-    (refresh win)))
-
-(define-method (set-prompt (xdoui <xdoui>) (str <string>) . args)
-  "Set the text of the prompt-window at the bottom of the screen."
-  (set-prompt! xdoui (apply format #f str args))
-  (draw-prompt xdoui))
-
-;; flashes is a alist of name and a timeout, each second the timeout
-;; is ticked down until it reaches zero, when it does it's removed 
-;; from the list. It's used to show information that isn't stricly
-;; necessary but that can be of interest, especially during debugging.
 ;;
-;; A flashes alist can look like this:
-;; (("test" . 5) ("debug" . 3) ("printing" . 6))
-
-(define-method (add-prompt-flash (xdoui <xdoui>) timeout (str <string>) . args)
-  (set! (flashes xdoui)
-    (assv-set! (flashes xdoui) (apply format #f str args) timeout))
-  (draw-prompt xdoui))
-
-(define-method (tick-flashes (xdoui <xdoui>))
-  (set! (flashes xdoui) (filter (λ (e) 
-                                   (positive? (cdr e))) 
-                                (map (λ (e) 
-                                        (cons (car e) (1- (cdr e)))) 
-                                     (flashes xdoui)))))
-
-(define-method (print (xdoui <xdoui>) window (str <string>))
-  "Add a string to the window specified by the window argument. The window
-  argument is either #f for the main window or a symbol specifing a sub
-  window on the right hand side."
-  (if window
-      (cond ((assv-ref (sidebar-windows xdoui) window)
-             => (λ (w) (let ((w (cdr w)))
-                            (addstr w str)
-                            (refresh w)))))
-      (let ((win (main-window xdoui)))
-        (addstr win str)
-        (refresh win))))
-
-(define-method (print (xdoui <xdoui>) window (str <string>) a . args)
-  (print xdoui window (apply format #f str a args)))
-
-(define* (debug-print xdoui str . arguments)
-  (cond ((get-sidebar-window! xdoui 'debug)
-         => (λ (win)
-               (apply print xdoui 'debug str arguments))) 
-        (else (begin
-                (add-to-sidebar! xdoui 'debug)
-                (apply debug-print xdoui str arguments)))))
-
-(define-method (get-next-char (xdoui <xdoui>) timeout)
-  "Read the next character from input or return false if timeout is reached."
-  (if timeout (timeout! (get-screen xdoui) timeout))
-  (let ((ch (getch (get-screen xdoui))))
-    (if timeout (begin (timeout! (get-screen xdoui) -1) (raw!)))
-    (if (not (eqv? ch KEY_RESIZE))
-        ch
-        (let ((scr (get-screen xdoui))) 
-          (timeout! (get-screen xdoui) 500)
-          (let loop ((ch (getch (get-screen xdoui))))
-            (if (eqv? ch KEY_RESIZE) 
-                (loop (getch (get-screen xdoui)))
-                (begin
-                  (resize-xdoui! xdoui)
-                  (timeout! (get-screen xdoui) -1)
-                  ch)))))))
+;; Utility functions
+;;
 
 (define (destroy-win win)
   (let ((s (normal #\sp)))
@@ -186,7 +122,126 @@ coding: utf-8
 (define (abort history . reason)
   (throw 'abort history (if (> (length reason) 0) (car reason) "Aborted")))
 
-(define-method (resize-xdoui! (xdoui <xdoui>))
+(define (register->string register) 
+  (match register
+    (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
+    ((? window? window) (format #f "[Win: ~a]" window))
+    ((? string? str) (format #f "[String: ~s]" str))
+    (e (format #f "[Unknown: ~a]" e))))
+
+;;
+;; Class definitions of <xdoui>
+;;
+
+(define-class <xdoui> ()
+  (xdo             #:getter   get-xdo         #:init-keyword #:xdo) 
+  (scr             #:getter   get-screen      #:init-keyword #:scr) 
+  (right-width     #:accessor right-width     #:init-value   0)  
+  (sidebar-windows #:accessor sidebar-windows #:init-value   '()) 
+  (main-window     #:accessor main-window     #:init-value   #f)  
+  (prompt-window   #:accessor prompt-window   #:init-value   #f)
+  (prompt-text     #:getter get-prompt #:setter set-prompt! #:init-value   "")
+  (flash-elements  #:accessor flashes         #:init-value   '()))
+
+(define (make-xdoui xdo scr)
+  (let ((xdoui (make <xdoui> #:xdo xdo #:scr scr)))
+    (redraw-xdoui! xdoui)
+    xdoui))
+
+;;
+;; Methods on <xdoui> that deals with the prompt window
+;;
+
+; flashes is a alist of name and a timeout, each second the timeout
+; is ticked down until it reaches zero, when it does it's removed 
+; from the list. It's used to show information that isn't stricly
+; necessary but that can be of interest, especially during debugging.
+;
+; A flashes alist can look like this:
+; (("test" . 5) ("debug" . 3) ("printing" . 6))
+
+(define-method (set-prompt (xdoui <xdoui>) (str <string>) . args)
+  "Set the text of the prompt-window at the bottom of the screen."
+  (set-prompt! xdoui (apply format #f str args))
+  (draw-prompt xdoui))
+
+(define-method (add-prompt-flash (xdoui <xdoui>) timeout (str <string>) . args)
+  (set! (flashes xdoui)
+    (assv-set! (flashes xdoui) (apply format #f str args) timeout))
+  (draw-prompt xdoui))
+
+(define-method (tick-flashes (xdoui <xdoui>))
+  (set! (flashes xdoui) (filter (λ (e) (positive? (cdr e))) 
+                                (map (λ (e) (cons (car e) (1- (cdr e)))) 
+                                     (flashes xdoui)))))
+
+(define-method (draw-prompt (xdoui <xdoui>))
+  (let ((win (prompt-window xdoui))
+        (mx  (getmaxx (prompt-window xdoui))))
+    (hline win (normal #\Space) mx #:x 0 #:y 0)
+    (addstr win (get-prompt xdoui) #:x 0 #:y 0)
+    (if (not (null? (flashes xdoui)))
+        (let ((s (string-join (map car (sort-list (flashes xdoui) (λ (a b) (< (cdr a) (cdr b))))) ", ")))
+          (let ((len (string-length s)))
+            (addstr win s #:y 0 #:x (if (> (floor/ mx 2) len) (- mx len) (floor/ mx 2))))))
+    (refresh win)))
+
+;;
+;; Methods on <xdoui> that deals with printing and ouputting
+;; things to windows.
+;;
+
+(define-method (print (xdoui <xdoui>) window (str <string>))
+  "Add a string to the window specified by the window argument. The window
+  argument is either #f for the main window or a symbol specifing a sub
+  window on the right hand side."
+  (if window
+      (cond ((assv-ref (sidebar-windows xdoui) window)
+             => (λ (w) (let ((w (cdr w)))
+                            (addstr w str)
+                            (refresh w)))))
+      (let ((win (main-window xdoui)))
+        (addstr win str)
+        (refresh win))))
+
+(define-method (print (xdoui <xdoui>) window (str <string>) a . args)
+  (print xdoui window (apply format #f str a args)))
+
+(define* (debug-print xdoui str . arguments)
+  (cond ((get-sidebar-window! xdoui 'debug)
+         => (λ (win)
+               (apply print xdoui 'debug str arguments))) 
+        (else (begin
+                (add-to-sidebar! xdoui 'debug)
+                (apply debug-print xdoui str arguments)))))
+
+;;
+;; Functions for reading characters.
+;;
+
+(define-method (get-next-char (xdoui <xdoui>) timeout)
+  "Read the next character from input or return false if timeout is reached."
+  (if timeout (timeout! (get-screen xdoui) timeout))
+  (let ((ch (getch (get-screen xdoui))))
+    (if timeout (begin (timeout! (get-screen xdoui) -1) (raw!)))
+    (if (not (eqv? ch KEY_RESIZE))
+        ch
+        (let ((scr (get-screen xdoui))) 
+          (timeout! (get-screen xdoui) 500)
+          (let loop ((ch (getch (get-screen xdoui))))
+            (if (eqv? ch KEY_RESIZE) 
+                (loop (getch (get-screen xdoui)))
+                (begin
+                  (redraw-xdoui! xdoui)
+                  (timeout! (get-screen xdoui) -1)
+                  ch)))))))
+
+;;
+;; Redraws the screen and all the sidebar windows according the
+;; the current size of the terminal.
+;;
+
+(define-method (redraw-xdoui! (xdoui <xdoui>))
   "Resize the whole screen to the current terminal size, it also clears the
   content of all the sidebar windows."
   (let*  ((scr (get-screen xdoui))
@@ -199,13 +254,13 @@ coding: utf-8
     (set! (prompt-window xdoui) (subwin scr 1 mx (- my 2) 0))
     (set! (right-width xdoui) width)
     (scrollok! (main-window xdoui) #t)
-    (resize-sidebar! xdoui)
+    (redraw-sidebar! xdoui)
     (draw-prompt xdoui)
     (hline scr (acs-hline) (- mx width) #:y (- my 3) #:x 0)  
     (refresh (main-window xdoui))
     (refresh (prompt-window xdoui))))
 
-(define-method (resize-sidebar! (xdoui <xdoui>))
+(define-method (redraw-sidebar! (xdoui <xdoui>))
   "Recreates all the sidebar windows in proper new size accord to the size of the
   terminal."
   (let ((win-count (length (sidebar-windows xdoui)))) 
@@ -229,9 +284,7 @@ coding: utf-8
                         (scrollok! wini #t) 
                         (refresh wini) 
                         (cons (car e) (cons wino wini)))) 
-                   (sidebar-windows xdoui)
-                   whs
-                   whsa)) 
+                   (sidebar-windows xdoui) whs whsa)) 
             ;; Draw frames around each windows and write the title over the
             ;; top border.
             (map (λ (e p) 
@@ -250,10 +303,14 @@ coding: utf-8
                  (sidebar-windows xdoui)
                  (cons #f (cdr (make-list win-count #t)))))))))
 
+;;
+;; Functions for manipulating the sidebar.
+;;
+
 (define-method (add-to-sidebar! (xdoui <xdoui>) name)
   (cond ((assv name (sidebar-windows xdoui)) #f)
         (else (set! (sidebar-windows xdoui) (assv-set! (sidebar-windows xdoui) name #f)))) 
-  (resize-sidebar! xdoui))
+  (redraw-sidebar! xdoui))
 
 (define-method (remove-from-sidebar! (xdoui <xdoui>) name)
   (cond ((assv name (sidebar-windows xdoui))
@@ -263,28 +320,29 @@ coding: utf-8
                  (set! (sidebar-windows xdoui) (assv-remove! (sidebar-windows xdoui) name))
                  (destroy-win wini) ; It's important to delete the windows in the right
                  (destroy-win wino) ; order, inner first and then outer.
-                 (resize-sidebar! xdoui))))
+                 (redraw-sidebar! xdoui))))
         (else #f)))
 
 (define-method (get-sidebar-window (xdoui <xdoui>) name)
+  "Get a sidebar window by it's name."
   (cond ((assv name (sidebar-windows xdoui))
          => (λ (v) (cdr v)))
         (else #f)))
 
 (define-method (get-sidebar-window! (xdoui <xdoui>) name)
+  "Same as get-sidebar-window but adds a window if there isn't 
+  anyone with that name specfied."
   (cond ((get-sidebar-window xdoui name) => (λ (w) (cdr w)))
         (else (add-to-sidebar! xdoui name)
               (get-sidebar-window! xdoui name))))
 
-(define (update-register registers key value) 
-  (vhash-consv key value (vhash-delv key registers)))
-
-(define (register->string register) 
-  (match register
-    (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
-    ((? window? window) (format #f "[Win: ~a]" window))
-    ((? string? str) (format #f "[String: ~s]" str))
-    (e (format #f "[Unknown: ~a]" e))))
+;;
+;; Class definitions and methods for dealing with
+;; read-while-prompts.
+;;
+;; A read-while-prompt is a prompt that is created with a
+;; predicate that decides what characters to be read by it.
+;;
 
 (define-class <xdoui-dialog-prompt> ()
   (xdoui #:getter get-xdoui #:init-keyword #:xdoui)
@@ -310,6 +368,10 @@ coding: utf-8
           (attr-set! (input-row p) A_REVERSE)
           (update-dialog-prompt p '()))))))
 
+(define-method (add-prompt-flash (p <xdoui-dialog-prompt>) (str <string>) . args)
+  (addstr (subwindow p) (apply format #f str args) #:x 1 #:y 1)
+  (refresh (subwindow p)))
+
 (define-method (update-dialog-prompt (p <xdoui-dialog-prompt>) acc)
   (let ((w (getmaxx (input-row p))))
     (addstr (subwindow p) (get-prompt p) #:x 0 #:y 0)
@@ -319,17 +381,6 @@ coding: utf-8
     (addstr (input-row p) (list->string (reverse (take acc w))) #:x 0 #:y 0)
     (refresh (input-row p))
     p))
-
-(define-method (destroy-prompt (p <xdoui-dialog-prompt>))
-  (delwin (input-row p))
-  (delwin (subwindow p))
-  (destroy-win (window p))
-  (touchwin (get-screen (get-xdoui p)))
-  (refresh (get-screen (get-xdoui p))))
-
-(define-method (add-prompt-flash (p <xdoui-dialog-prompt>) (str <string>) . args)
-  (addstr (subwindow p) (apply format #f str args) #:x 1 #:y 1)
-  (refresh (subwindow p)))
 
 (define (read-while-dialog xdoui p? prompt)
   (let* ((prompt (make-dialog-prompt xdoui prompt))
@@ -384,24 +435,31 @@ coding: utf-8
            (read-stuff acc (get-next-char xdoui #f))))
         (else (cons ch acc))))))
 
-#|
- |(define-syntax define-action
- |  (syntax-rules (store load key)
- |    ((_ name (xdoui registers state rest ...)
- |        ((load load-reg) (store store-reg) (key ch))
- |        exp exp* ...)
- |     (define (name xdoui registers state rest ...)
- |       (let ((load-reg (if (identifier? load-reg) (cond ((vhash-assv 'load state) => (λ (e) (cdr e))))))
- |             (store-reg (if (identifier? store-reg) (cond ((vhash-assv 'store state) => (λ (e) (cdr e))))))
- |             (ch (if (identifier? ch) (get-next-char xdoui #f))))
- |         exp exp* ...)))))
- |#
+(define-method (destroy-prompt (p <xdoui-dialog-prompt>))
+  (delwin (input-row p))
+  (delwin (subwindow p))
+  (destroy-win (window p))
+  (touchwin (get-screen (get-xdoui p)))
+  (refresh (get-screen (get-xdoui p))))
 
-#|
- |(define-action get-current-window (xdoui registers state history args)
- |               ((load #f) (store streg) (key #f))
- |               (debug-print xdoui "Stuff! ~s\n" streg))
- |#
+;;
+;; Utility functions for the command functions
+;;
+
+(define (add-to-register reg val history)
+  (values `(add-to-register ,reg ,val)
+          history))
+
+(define (value val history)
+  (values `(value ,val) history))
+
+(define (get-value state name)
+  (cond ((vhash-assv name state) => (λ (s) (cdr s)))
+        (else #f)))
+
+;;
+;; Defines all the command functions
+;;
 
 (define (change-register xdoui registers state history type)
   "Change the current registers used as operators."
@@ -461,17 +519,6 @@ coding: utf-8
     (else
       (abort history "This type of prefix isn't implemented yet."))))
 
-(define (add-to-register reg val history)
-  (values `(add-to-register ,reg ,val)
-          history))
-
-(define (value val history)
-  (values `(value ,val) history))
-
-(define (get-value state name)
-  (cond ((vhash-assv name state) => (λ (s) (cdr s)))
-        (else #f)))
-
 (define (get-window-position xdoui registers state history . rest)
   (let ((sreg (get-value state 'store))
         (lreg (get-value state 'load)))
@@ -524,6 +571,12 @@ coding: utf-8
         (else
           (abort history "No register specified"))))
 
+;;;                                                                        ;;;
+;;                                                                          ;;
+;; What follows here is the hardcore loops and such that runs the whole app ;;
+;;                                                                          ;;
+;;;                                                                        ;;;
+
 (define (print-all-registers xdoui registers)
   (cond ((get-sidebar-window! xdoui 'registers)
          => (λ (scr)
@@ -549,8 +602,7 @@ coding: utf-8
                  (λ ()
                     (let-values (((result . new-history) (apply ƒ xdoui registers state history args)))
                       (cond ((vhash-assv 'prefix state) 
-                             => (λ (p)
-                                   (debug-print xdoui "Prefix: ~a~%" (cdr p)))))
+                             => (λ (p) (debug-print xdoui "Prefix: ~a~%" (cdr p)))))
                       (if (not (boolean? result))
                           (debug-print xdoui "Result: ~S~%" result))
                       (let ((history (if (not (null? new-history)) 
@@ -606,13 +658,12 @@ coding: utf-8
         (('quit ?reason) `(quit ,?reason))
         (((? symbol? ?symbol) . args)
          (cond ((false-if-exception (module-ref (current-module) ?symbol))
-                => (λ (ƒ)
-                      (cmd-loop state history (cons ƒ branch))))
+                => (λ (ƒ) (cmd-loop state history (cons ƒ branch))))
                (else (abort history (format #f "No such function: (~S)" ?symbol)))))
         (_ (debug-print xdoui "Unknown: ~S\n" branch))))))
 
 (define (main-loop xdoui)
-  (resize-xdoui! xdoui)
+  (redraw-xdoui! xdoui)
   (refresh (get-screen xdoui))
   (call-with-new-thread (λ () (let loop ((counter 0))
                                    (sleep 1)
@@ -629,8 +680,7 @@ coding: utf-8
                        (print xdoui #f "Quit: ~a\n" ?reason))
                       (_ #f)))
                (begin
-                 (for-each (λ (e) 
-                              (if (cdr e) (refresh (cddr e))))
+                 (for-each (λ (e) (if (cdr e) (refresh (cddr e))))
                            (sidebar-windows xdoui))
                  (match result
                    (('add-to-register ?key ?value)
