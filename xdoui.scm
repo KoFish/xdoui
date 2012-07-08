@@ -637,7 +637,7 @@ coding: utf-8
                           (('add-to-state ?key ?value)
                            (let ((state (vhash-consv ?key ?value state)))
                              (cmd-loop state history parse-tree)))
-                          (('value ?value) (print xdoui #f "Result: ~a~%" ?value))
+                          (('value ?value) (print xdoui #f "Result: ~a~%" (register->string ?value)))
                           (_ result)))))
                  (λ (key . args) #f)))))
       (match branch 
