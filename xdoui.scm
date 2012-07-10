@@ -78,7 +78,6 @@ coding: utf-8
     (#\m (#\g (#\p get-mouse-position)
               (#\w get-window at-mouse))
          (#\p put-mouse-position)
-         (#\w get-mouse-window)
          (#\c click-mouse))
     (#\w (#\p put-window-position)
          (#\g (#\a get-window active)
@@ -127,7 +126,7 @@ coding: utf-8
 (define (register->string register) 
   (match register
     (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
-    ((? xdo-window? window) (format #f "[Win: ~a]" window))
+    (((? xdo-window? window) . title) (format #f "[Win: ~a]" (or title window)))
     ((? string? str) (format #f "[String: ~s]" str))
     (e (format #f "[Unknown: ~a]" e))))
 
@@ -265,45 +264,57 @@ coding: utf-8
 (define-method (redraw-sidebar! (xdoui <xdoui>))
   "Recreates all the sidebar windows in proper new size accord to the size of the
   terminal."
-  (let ((win-count (length (sidebar-windows xdoui)))) 
-    (if (positive? win-count) 
-        (let* ((my (getmaxy (get-screen xdoui))) 
-               (mx (getmaxx (get-screen xdoui)))
-               (whs (divide-array (- my 3) win-count))
-               (whsa (reverse (fold (λ (e a) (cons (+ e (car a)) a)) (list 0) whs)))
-               (w (right-width xdoui)))
-          (let-values (((wh q) (floor/ (- my 3) win-count))) 
-            (set! (sidebar-windows xdoui) 
-              ;; Destroy the old windows and create new ones to replace 
-              ;; them.
-              (map (λ (e wh x)
-                      (cond ((cdr e) 
-                             => (λ (win)
-                                   (destroy-win (cdr win))
-                                   (destroy-win (car win)))))
-                      (let* ((wino (subwin (get-screen xdoui) (1+ wh) w x (- mx w))) 
-                             (wini (derwin wino (- wh 2) (- w 2) 1 1))) 
-                        (scrollok! wini #t) 
-                        (refresh wini) 
-                        (cons (car e) (cons wino wini)))) 
-                   (sidebar-windows xdoui) whs whsa)) 
-            ;; Draw frames around each windows and write the title over the
-            ;; top border.
-            (map (λ (e p) 
-                    (let ((n (car e))
-                          (wo (cadr e))
-                          (wi (cddr e)))
-                      (if (not p)
-                          (box wo (acs-vline) (acs-hline))
-                          (border wo 
-                                  (acs-vline) (acs-vline)
-                                  (acs-hline) (acs-hline)
-                                  (acs-ltee) (acs-rtee)
-                                  (acs-llcorner) (acs-lrcorner))) 
-                      (addstr wo (string-capitalize (symbol->string n)) #:x 2 #:y 0)
-                      (refresh wo)))
-                 (sidebar-windows xdoui)
-                 (cons #f (cdr (make-list win-count #t)))))))))
+  (if (not (null? (sidebar-windows xdoui))) 
+      (let* ((win-count (length (sidebar-windows xdoui)))
+             (my (getmaxy (get-screen xdoui))) 
+             (mx (getmaxx (get-screen xdoui)))
+             (whs (divide-array (- my 3) win-count))
+             (whsa (reverse (fold (λ (e a) (cons (+ e (car a)) a)) (list 0) whs)))
+             (w (right-width xdoui)))
+        (let-values (((wh q) (floor/ (- my 3) win-count))) 
+          (if (not (null? (sidebar-windows xdoui)))
+              (begin
+                (set! (sidebar-windows xdoui) 
+                  ;; Destroy the old windows and create new ones to replace 
+                  ;; them.
+                  (map (λ (e wh y)
+                          (cond ((cdr e) 
+                                 => (λ (win)
+                                       (destroy-win (cdr win))
+                                       (destroy-win (car win)))))
+                          (let* ((wino (subwin (get-screen xdoui) (1+ wh) w y (- mx w))) 
+                                 (wini (derwin wino (- wh 2) (- w 2) 1 1))) 
+                            (scrollok! wini #t) 
+                            (erase wino)
+                            (refresh wini) 
+                            (cons (car e) (cons wino wini)))) 
+                       (sidebar-windows xdoui) whs whsa)) 
+                ;; Draw frames around each windows and write the title over the
+                ;; top border.
+                (map (λ (e p) 
+                        (let ((n (car e))
+                              (wo (cadr e))
+                              (wi (cddr e)))
+                          (if (not p)
+                              (box wo (acs-vline) (acs-hline))
+                              (border wo 
+                                      (acs-vline) (acs-vline)
+                                      (acs-hline) (acs-hline)
+                                      (acs-ltee) (acs-rtee)
+                                      (acs-llcorner) (acs-lrcorner))) 
+                          (addstr wo (string-capitalize (symbol->string n)) #:x 2 #:y 0)
+                          (refresh wo)))
+                     (sidebar-windows xdoui)
+                     (cons #f (cdr (make-list win-count #t)))))
+              )))
+      (let* ((scr (get-screen xdoui))
+             (my (getmaxy scr))
+             (mx (getmaxx scr))
+             (w (right-width xdoui)))
+        (let ((win (subwin scr (- my 2) w 0 (- mx w))))
+        (box win (acs-vline) (acs-hline))
+        (refresh win)
+        (delwin win)))))
 
 ;;
 ;; Functions for manipulating the sidebar.
@@ -571,9 +582,11 @@ coding: utf-8
              ((ƒ (get-xdo xdoui))
               => (λ (w)
                     (if (xdo-window? w)
-                        (if sreg
-                            (add-to-register sreg w history)
-                            (value w history))
+                        (let* ((w-title (xdo-get-window-name (get-xdo xdoui) #:window w))
+                               (title (if w-title (car w-title) #f))) 
+                          (if sreg
+                              (add-to-register sreg (cons w title) history)
+                              (value (cons w title) history)))
                         (abort history "Did not get a window"))))
              (else 
                (abort history "Failed to get any window")))
@@ -642,7 +655,6 @@ coding: utf-8
                  (λ (key . args) #f)))))
       (match branch 
         ((((? char?) . _) . _)
-         (print-all-registers xdoui registers)
          (let ((timeout (assv-ref branch 'timeout)))
            (let ((ch (get-next-char xdoui (if timeout (car timeout) #f))))
              (match ch
@@ -670,10 +682,7 @@ coding: utf-8
                (cond ((procedure-documentation ƒ)
                       => (λ (help-text)
                             (print xdoui #f "~%Description: ~%  ~a~%" 
-                                   (string-join 
-                                     (map string-trim-both 
-                                          (string-split help-text #\newline))
-                                     " ")))))
+                                   (string-join (map string-trim-both (string-split help-text #\newline)) " ")))))
                (begin
                  (add-prompt-flash xdoui 3 "~S" ?symbol)
                  (apply call-proc ƒ ?args)))))
@@ -707,6 +716,7 @@ coding: utf-8
                  (match result
                    (('add-to-register ?key ?value)
                     (let ((new-registers (vhash-consv ?key ?value (vhash-delv ?key registers))))
+                      (print-all-registers xdoui new-registers)
                       (loop new-registers)))
                    (('update-registers (? vlist? ?new-registers))
                     (loop ?new-registers))
