@@ -30,8 +30,11 @@ coding: utf-8
 ;;
 ;;; Code:
 
+(add-to-load-path (dirname (current-filename)))
+
 (use-modules (ncurses curses)
              (oop goops)) 
+
 (use-modules (ice-9 i18n)
              (ice-9 match)
              (ice-9 format)
@@ -40,13 +43,15 @@ coding: utf-8
              (ice-9 vlist)
              (ice-9 optargs))
 
-(use-modules (srfi srfi-1)
+(use-modules ((srfi srfi-1)
+              #:select ((take . srfi-take)))
              (srfi srfi-9)
              (srfi srfi-9 gnu)
              (srfi srfi-11)
              (srfi srfi-88))
 
 (use-modules (xdo libxdo))
+(use-modules (helpers))
 
 (setlocale LC_ALL "en_US.UTF-8")
 
@@ -90,45 +95,8 @@ coding: utf-8
 ;; Utility functions
 ;;
 
-(define (destroy-win win)
-  (let ((s (normal #\sp)))
-    (border win s s s s s s s s)
-    (refresh win)
-    (delwin win)))
-
-(define (divide-array n d)
-  "Divide a by b and returns an array of b elements such that the sum of all
-  elements equal to a with as less difference between the elements as possible."
-  (let-values (((r q) (floor/ n d)))
-    (append (make-list q (1+ r)) (make-list (- d q) r))))
-
-(define (take lst n)
-  "Reimplementation of take since the default guile implementation does not allow
-  taking more elements than is in the list."
-  (match lst
-    ('() '())
-    ((?h . ?r) (if (> n 0) (cons ?h (take ?r (1- n))) '()))))
-
-(define (quote-chars ch)
-  "Quote characters to be printed in the UI."
-  (match ch
-    (#\newline "\\n")
-    (#\tab "\\t")
-    (#\esc "\\esc")
-    ((? string? ?str) (if (> (string-length ?str) 10)
-                         (string-concatenate (list (string-take ?str 8) ".."))
-                         ?str))
-    (else ch)))
-
 (define (abort history . reason)
   (throw 'abort history (if (> (length reason) 0) (car reason) "Aborted")))
-
-(define (register->string register) 
-  (match register
-    (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
-    (((? xdo-window? window) . title) (format #f "[Win: ~a]" (or title window)))
-    ((? string? str) (format #f "[String: ~s]" str))
-    (e (format #f "[Unknown: ~a]" e))))
 
 ;;
 ;; Class definitions of <xdoui>
