@@ -2,8 +2,7 @@
   #:export (destroy-win
              take 
              quote-chars 
-             divide-array
-             register->string))
+             divide-array))
 
 (use-modules (ncurses curses)
              (ice-9 match)
@@ -38,11 +37,4 @@
   elements equal to a with as less difference between the elements as possible."
   (let-values (((r q) (floor/ n d)))
     (append (make-list q (1+ r)) (make-list (- d q) r))))
-
-(define (register->string register) 
-  (match register
-    (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
-    (((? xdo-window? window) . title) (format #f "[Win: ~a]" (or title window)))
-    ((? string? str) (format #f "[String: ~s]" str))
-    (e (format #f "[Unknown: ~a]" e))))
 

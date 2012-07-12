@@ -44,7 +44,7 @@ coding: utf-8
              (ice-9 optargs))
 
 (use-modules ((srfi srfi-1)
-              #:select ((take . srfi-take)))
+              #:select ((take . srfi-take) fold map))
              (srfi srfi-9)
              (srfi srfi-9 gnu)
              (srfi srfi-11)
@@ -94,6 +94,13 @@ coding: utf-8
 ;;
 ;; Utility functions
 ;;
+
+(define (register->string register) 
+  (match register
+    (((? number? x) . (? number? y)) (format #f "[X ~a | Y ~a]" x y))
+    (((? xdo-window? window) . title) (format #f "[Win: ~a]" (or title window)))
+    ((? string? str) (format #f "[String: ~s]" str))
+    (e (format #f "[Unknown: ~a]" e)))) 
 
 (define (abort history . reason)
   (throw 'abort history (if (> (length reason) 0) (car reason) "Aborted")))
@@ -349,7 +356,7 @@ coding: utf-8
           (attr-set! (input-row p) A_REVERSE)
           (update-dialog-prompt p '()))))))
 
-(define-method (add-prompt-flash (p <xdoui-dialog-prompt>) (str <string>) . args)
+(define-method (add-dialog-prompt-flash (p <xdoui-dialog-prompt>) (str <string>) . args)
   (addstr (subwindow p) (apply format #f str args) #:x 1 #:y 1)
   (refresh (subwindow p)))
 
@@ -368,11 +375,11 @@ coding: utf-8
          (p (λ (acc)
                (update-dialog-prompt prompt acc)))
          (p-e (λ (str . args)
-                 (apply add-prompt-flash 5 prompt str args))))
+                 (apply add-dialog-prompt-flash 5 prompt str args))))
     (with-throw-handler 'abort
       (λ ()
          (let ((acc (read-while-generic xdoui p? p p-e)))
-           (destroy-prompt prompt)
+           (destroy-dialog-prompt prompt)
            (if (not (null? acc))
                (begin
                  (if (not (eqv? (car acc) #\newline)) 
@@ -380,7 +387,7 @@ coding: utf-8
                  (cdr acc)) 
                '())))
       (λ (key . args)
-         (destroy-prompt prompt)))))
+         (destroy-dialog-prompt prompt)))))
 
 (define (read-while-prompt xdoui p? prompt)
   (let* ((p (λ (acc)
@@ -416,7 +423,7 @@ coding: utf-8
            (read-stuff acc (get-next-char xdoui #f))))
         (else (cons ch acc))))))
 
-(define-method (destroy-prompt (p <xdoui-dialog-prompt>))
+(define-method (destroy-dialog-prompt (p <xdoui-dialog-prompt>))
   (delwin (input-row p))
   (delwin (subwindow p))
   (destroy-win (window p))
@@ -435,7 +442,8 @@ coding: utf-8
   (values `(value ,val) history))
 
 (define (get-value state name)
-  (cond ((vhash-assv name state) => (λ (s) (cdr s)))
+  (cond ((vhash-assv name state)
+         => (λ (s) (cdr s)))
         (else #f)))
 
 ;;
