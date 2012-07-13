@@ -2,7 +2,8 @@
   #:export (destroy-win
              take 
              quote-chars 
-             divide-array))
+             divide-array
+             box*))
 
 (use-modules (ncurses curses)
              (ice-9 match)
@@ -13,6 +14,12 @@
     (border win s s s s s s s s)
     (refresh win)
     (delwin win)))
+
+(define (box* w) 
+  (border w (acs-vline) (acs-vline)
+            (acs-hline) (acs-hline)
+            (acs-ltee) (acs-rtee)
+            (acs-llcorner) (acs-lrcorner))) 
 
 (define (take lst n)
   "Reimplementation of take since the default guile implementation does not allow
